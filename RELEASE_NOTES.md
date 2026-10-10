@@ -1,4 +1,4 @@
-# Unreleased — Independent API keys
+# Gemini Accounts 1.3.5 — Independent API keys
 
 - Adds a separate API keys tab with encrypted profiles, add/edit/pause/remove controls, and per-key response, error and token statistics.
 - Makes API models available alongside Google subscription models without replacing Google Gemini or Claude selections.

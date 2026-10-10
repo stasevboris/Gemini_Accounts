@@ -83,7 +83,7 @@ def install(payload, root, shortcuts=True, automatic=False):
     config = yaml.safe_load(config_path.read_text('utf-8-sig'))
     if remove_legacy_summary_rule(config):
         atomic_write(config_path, yaml.safe_dump(config, sort_keys=False).encode())
-    metadata = {'version': '1.3.4+tokenharbor1'}
+    metadata = {'version': '1.3.5'}
     native_manifest = payload / 'native-build.json'
     if native_manifest.exists():
         native_build = json.loads(native_manifest.read_text('utf-8'))
