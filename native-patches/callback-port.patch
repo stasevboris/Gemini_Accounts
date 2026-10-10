@@ -1,0 +1,208 @@
+--- a/internal/api/handlers/management/auth_files_oauth_callback.go
++++ b/internal/api/handlers/management/auth_files_oauth_callback.go
+@@ -20,6 +20,7 @@
+ )
+ 
+ type callbackForwarder struct {
++	port     int
+ 	provider string
+ 	server   *http.Server
+ 	done     chan struct{}
+@@ -55,6 +56,26 @@
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
+ 	}
++	return startCallbackForwarderListener(ln, provider, targetBase), nil
++}
++
++// Windows can reserve an otherwise unused callback port (WSAEACCES). Keep
++// browser login working by holding a loopback listener on an OS-selected port.
++func startCallbackForwarderWithFallback(port int, provider, targetBase string) (*callbackForwarder, error) {
++	forwarder, err := startCallbackForwarder(port, provider, targetBase)
++	if err == nil {
++		return forwarder, nil
++	}
++	ln, errFallback := net.Listen("tcp", "127.0.0.1:0")
++	if errFallback != nil {
++		return nil, fmt.Errorf("callback port unavailable: %w; fallback: %v", err, errFallback)
++	}
++	return startCallbackForwarderListener(ln, provider, targetBase), nil
++}
++
++func startCallbackForwarderListener(ln net.Listener, provider, targetBase string) *callbackForwarder {
++	port := ln.Addr().(*net.TCPAddr).Port
++	addr := ln.Addr().String()
+ 
+ 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		target := targetBase
+@@ -70,6 +91,7 @@
+ 	})
+ 
+ 	srv := &http.Server{
++		Addr:              addr,
+ 		Handler:           handler,
+ 		ReadHeaderTimeout: 5 * time.Second,
+ 		WriteTimeout:      5 * time.Second,
+@@ -84,6 +106,7 @@
+ 	}()
+ 
+ 	forwarder := &callbackForwarder{
++		port:     port,
+ 		provider: provider,
+ 		server:   srv,
+ 		done:     done,
+@@ -95,7 +118,7 @@
+ 
+ 	log.Infof("callback forwarder for %s listening on %s", provider, addr)
+ 
+-	return forwarder, nil
++	return forwarder
+ }
+ 
+ func stopCallbackForwarderInstance(port int, forwarder *callbackForwarder) {
+--- a/internal/api/handlers/management/auth_files_provider_oauth.go
++++ b/internal/api/handlers/management/auth_files_provider_oauth.go
+@@ -386,16 +386,19 @@
+ 			return
+ 		}
+ 		var errStart error
+-		if forwarder, errStart = startCallbackForwarder(antigravity.CallbackPort, "antigravity", targetURL); errStart != nil {
++		if forwarder, errStart = startCallbackForwarderWithFallback(antigravity.CallbackPort, "antigravity", targetURL); errStart != nil {
+ 			log.WithError(errStart).Error("failed to start antigravity callback forwarder")
+ 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+ 			return
+ 		}
++		// The authorization request and token exchange must use the same URI.
++		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", forwarder.port)
++		authURL = authSvc.BuildAuthURL(state, redirectURI)
+ 	}
+ 
+ 	go func() {
+ 		if isWebUI {
+-			defer stopCallbackForwarderInstance(antigravity.CallbackPort, forwarder)
++			defer stopCallbackForwarderInstance(forwarder.port, forwarder)
+ 		}
+ 
+ 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-antigravity-%s.oauth", state))
+--- /dev/null
++++ b/internal/api/handlers/management/oauth_callback_port_test.go
+@@ -0,0 +1,119 @@
++package management
++
++import (
++	"encoding/json"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strconv"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++func TestCallbackFallbackKeepsAListenerAndForwardsQuery(t *testing.T) {
++	occupied, err := net.Listen("tcp", "0.0.0.0:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer occupied.Close()
++	port := occupied.Addr().(*net.TCPAddr).Port
++	forwarder, err := startCallbackForwarderWithFallback(port, "antigravity", "http://127.0.0.1:8318/antigravity/callback")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer stopCallbackForwarderInstance(forwarder.port, forwarder)
++	if forwarder.port == port || forwarder.port == 0 {
++		t.Fatalf("invalid fallback port: %d", forwarder.port)
++	}
++	if host, _, _ := net.SplitHostPort(forwarder.server.Addr); host != "127.0.0.1" {
++		t.Fatalf("non-loopback fallback: %s", host)
++	}
++	client := &http.Client{Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
++	response, err := client.Get("http://127.0.0.1:" + strconv.Itoa(forwarder.port) + "/oauth-callback?state=test-state&code=test-code")
++	if err != nil {
++		t.Fatal(err)
++	}
++	response.Body.Close()
++	if response.StatusCode != http.StatusFound {
++		t.Fatalf("status %d", response.StatusCode)
++	}
++	if response.Header.Get("Location") != "http://127.0.0.1:8318/antigravity/callback?state=test-state&code=test-code" {
++		t.Fatal("callback query not preserved")
++	}
++	if response.Header.Get("Cache-Control") != "no-store" {
++		t.Fatal("callback must not be cached")
++	}
++}
++
++func TestCallbackPreferredPortStaysCompatible(t *testing.T) {
++	forwarder, err := startCallbackForwarderWithFallback(0, "antigravity", "http://127.0.0.1:8318/antigravity/callback")
++	if err != nil {
++		t.Fatal(err)
++	}
++	port := forwarder.port
++	stopCallbackForwarderInstance(port, forwarder)
++	forwarder, err = startCallbackForwarderWithFallback(port, "antigravity", "http://127.0.0.1:8318/antigravity/callback")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer stopCallbackForwarderInstance(forwarder.port, forwarder)
++	if forwarder.port != port {
++		t.Fatalf("preferred port %d was ignored", port)
++	}
++}
++
++func TestRequestAntigravityUsesActualCallbackPort(t *testing.T) {
++	// A occupied port also reproduces Windows' reserved-port bind failure.
++	occupied, err := net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(antigravity.CallbackPort))
++	if err == nil {
++		defer occupied.Close()
++	}
++	handler := NewHandlerWithoutConfigFilePath(&config.Config{Port: 8318, AuthDir: t.TempDir()}, nil)
++	router := gin.New()
++	router.GET("/antigravity-auth-url", handler.RequestAntigravityToken)
++	response := httptest.NewRecorder()
++	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/antigravity-auth-url?is_webui=true", nil))
++	if response.Code != http.StatusOK {
++		t.Fatalf("auth URL request returned %d", response.Code)
++	}
++	var result struct {
++		URL   string `json:"url"`
++		State string `json:"state"`
++	}
++	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
++		t.Fatal(err)
++	}
++	defer CompleteOAuthSession(result.State)
++	authURL, err := url.Parse(result.URL)
++	if err != nil {
++		t.Fatal(err)
++	}
++	redirect, err := url.Parse(authURL.Query().Get("redirect_uri"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	port, err := strconv.Atoi(redirect.Port())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if port == antigravity.CallbackPort {
++		t.Fatal("auth URL still uses the unavailable callback port")
++	}
++	callbackForwardersMu.Lock()
++	forwarder := callbackForwarders[port]
++	callbackForwardersMu.Unlock()
++	if forwarder == nil {
++		t.Fatal("advertised port has no callback listener")
++	}
++	defer stopCallbackForwarderInstance(port, forwarder)
++	if redirect.Scheme != "http" || redirect.Hostname() != "localhost" || redirect.Path != "/oauth-callback" {
++		t.Fatal("invalid callback URL")
++	}
++	if authURL.Host != "accounts.google.com" || authURL.Query().Get("state") != result.State {
++		t.Fatal("invalid Google auth URL")
++	}
++}

@@ -1,0 +1,12 @@
+{
+  "upstream_version": "8.0.16",
+  "commit": "a2976eb8a303f11b4ea5177bce9f9ff752634dfc",
+  "source": "build/login-fix/source/CLIProxyAPI-a2976eb8a303f11b4ea5177bce9f9ff752634dfc",
+  "source_sha256": "ffddb717a0b9ccbf462d0660b4ded1a0d6e5c1f982545b4284330b36ba8b1e8d",
+  "go_version": "go1.26.9",
+  "go_sha256": "d722201a9c0c086d1610e111c48203009af690892ed708072bd5ae20160e7a59",
+  "version": "8.0.16+callbackfix1",
+  "binary": "build/login-fix/cli-proxy-api.exe",
+  "binary_sha256": "bc2cd451d0d0a761358729f568214ab15ad0178a326652a545a7b36f640e11c0",
+  "patch_sha256": "2bed9577b2987a892ec7a958b58542d3b041aed013498219e419b5a3c447e397"
+}
