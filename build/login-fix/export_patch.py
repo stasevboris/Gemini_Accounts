@@ -35,5 +35,6 @@ manifest = {**metadata, 'source': 'build/login-fix/source/CLIProxyAPI-' + metada
     'binary_sha256': binary_sha, 'patch_sha256': hashlib.sha256(patch_file.read_bytes()).hexdigest()}
 (dest / 'manifest.json').write_text(json.dumps(manifest, indent=2), 'utf-8')
 payload = root / 'build/payload'
+payload.mkdir(parents=True, exist_ok=True)
 (payload / 'native-build.json').write_text(json.dumps(manifest, indent=2), 'utf-8')
 print('Patch exported; binary SHA256:', binary_sha)
