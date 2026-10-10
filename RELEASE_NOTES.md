@@ -4,7 +4,8 @@
 - Makes API models available alongside Google subscription models without replacing Google Gemini or Claude selections.
 - Routes TokenHarbor requests through their original Anthropic or OpenAI endpoints and keeps Google account cooldowns separate.
 - Migrates the existing local TokenHarbor key without embedding personal credentials in source code or executables.
-- Includes 141 passing tests and a successful streaming Haiku request through the installed gateway.
+- Preserves multiple model IDs when editing an API key instead of merging them into one line.
+- Includes 142 passing tests and a successful streaming Haiku request through the installed gateway.
 
 # Gemini Accounts 1.3.4 — Gateway retry handling and authenticated log uploads
 

@@ -5,7 +5,7 @@ from unittest.mock import patch
 from tests.qt_support import application, flush, until
 from PySide6.QtCore import QThread, Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QLabel, QComboBox, QPushButton, QMessageBox, QSystemTrayIcon, QLineEdit
+from PySide6.QtWidgets import QLabel, QComboBox, QPushButton, QMessageBox, QSystemTrayIcon, QLineEdit, QTextEdit
 from app import App
 from backend import Controller, AccountError
 from locales import tr, LANGUAGES, current_language, set_language, display_reason, _strings
@@ -282,6 +282,22 @@ class QuotaUITests(unittest.TestCase):
         self.assertEqual(rows[0]['label'], 'Dialog provider')
         self.assertNotIn('key', rows[0])
         self.assertNotIn(b'secret-from-dialog', (self.controller.data_dir/'api-keys.dpapi').read_bytes())
+
+    def test_editing_an_api_key_preserves_multiple_model_ids(self):
+        import api_keys
+        original = ['claude-haiku-5.5:free', 'gemini-3-flash']
+        api_keys.save_profile(self.controller, {'label': 'Two models', 'key': 'multimodel-test-key',
+            'base_url': 'https://tokenharbor.ai', 'models': original})
+        captured = []
+        def submit():
+            dialog = self.qapp.activeModalWidget()
+            captured.append(dialog.findChild(QTextEdit, 'apiModelsInput').toPlainText())
+            dialog.findChild(QPushButton, 'apiSaveButton').click()
+        QTimer.singleShot(20, submit)
+        with patch.object(self.window, 'api_profiles_changed'):
+            self.window.edit_api_profile(api_keys.profiles(self.controller)[0])
+        self.assertEqual(captured, ['\n'.join(original)])
+        self.assertEqual(api_keys.profiles(self.controller)[0]['models'], original)
 
     def test_multilingual_previews_and_toolbar_fit(self):
         self.load_accounts();w=self.window
