@@ -128,7 +128,6 @@ class App(QMainWindow):
         self._gateway_timer.timeout.connect(self.poll_gateway_jobs)
         self._gateway_timer.start(1000)
         self._init_desktop_controls()
-        QTimer.singleShot(30000, self.check_for_updates)
         if self.controller.preferences.get('details-collapsed'):
             QTimer.singleShot(180, self.toggle_details)
 
