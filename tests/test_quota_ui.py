@@ -20,7 +20,7 @@ class QuotaUITests(unittest.TestCase):
         root = Path(self.temp.name)
         self.controller = Controller(proxy_dir=root/'proxy', data_dir=root/'data')
         self.patches = [patch('app.Controller', return_value=self.controller)]
-        self.patches += [patch.object(App, name) for name in ('refresh','fetch_quota','start_activity','queue_policy','poll_gateway_jobs','check_for_updates','connection_settings','check_vpn')]
+        self.patches += [patch.object(App, name) for name in ('refresh','fetch_quota','start_activity','queue_policy','poll_gateway_jobs','connection_settings','check_vpn')]
         for p in self.patches:p.start()
         self.window = App()
         self.window.integrations = Integrations(self.controller, home=root/'home', local=root/'local')
