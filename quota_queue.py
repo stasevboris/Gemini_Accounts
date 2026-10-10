@@ -648,7 +648,7 @@ class Handler(BaseHTTPRequestHandler):
     do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = do_OPTIONS = handle_request
 
     def record_api_attempt(self):
-        if self.api_profile is not None:
+        if self.api_profile is not None and not self.api_profile.startswith('test-'):
             status = self.api_status
             if self.api_usage.failed and status == 200:
                 status = 502
@@ -656,7 +656,7 @@ class Handler(BaseHTTPRequestHandler):
                 status = 499
             self.server.api_stats.record(self.api_profile, self.api_model, status, self.api_usage,
                                          time.monotonic() - self.api_started)
-            self.api_profile = None
+        self.api_profile = None
 
     def model_catalog(self):
         conn = http.client.HTTPConnection(*self.server.upstream, timeout=5)

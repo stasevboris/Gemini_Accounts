@@ -5,7 +5,7 @@ from unittest.mock import patch
 from tests.qt_support import application, flush, until
 from PySide6.QtCore import QThread, Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QLabel, QComboBox, QPushButton, QMessageBox, QSystemTrayIcon, QLineEdit, QTextEdit
+from PySide6.QtWidgets import QLabel, QComboBox, QPushButton, QMessageBox, QSystemTrayIcon, QLineEdit, QTextEdit, QDoubleSpinBox
 from app import App
 from backend import Controller, AccountError
 from locales import tr, LANGUAGES, current_language, set_language, display_reason, _strings
@@ -275,7 +275,7 @@ class QuotaUITests(unittest.TestCase):
             dialog.findChild(QLineEdit, 'apiKeyInput').setText('secret-from-dialog')
             dialog.findChild(QPushButton, 'apiSaveButton').click()
         QTimer.singleShot(20, fill)
-        with patch.object(w, 'api_profiles_changed'):
+        with patch.object(w, 'api_profiles_changed'), patch('api_keys.verify_profile', return_value={'model': 'claude-haiku-5.5:free'}):
             w.edit_api_profile()
         rows = api_keys.profiles(self.controller)
         self.assertEqual(len(rows), 1)
@@ -298,6 +298,56 @@ class QuotaUITests(unittest.TestCase):
             self.window.edit_api_profile(api_keys.profiles(self.controller)[0])
         self.assertEqual(captured, ['\n'.join(original)])
         self.assertEqual(api_keys.profiles(self.controller)[0]['models'], original)
+
+    def test_weekly_groups_hide_only_card_rows_and_pool_tracks_real_blocks(self):
+        self.load_accounts()
+        w = self.window
+        for name, remaining in (('a', 0), ('b', .005)):
+            group = w.quota_cache[name]['data']['groups'][0]
+            group['buckets'][1]['remaining'] = remaining
+            group['buckets'][0]['remaining'] = 1
+        w.items[2]['cooldowns'] = [{'scope': 'model', 'model_key': 'gemini-pro-agent', 'reason': 'quota',
+            'retry_at': (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()}]
+        w.draw_account_list()
+        self.assertEqual(list(w.account_widgets)[0], 'c')
+        self.assertNotIn(('gemini', '5h'), w.account_widgets['a'].quota_rows)
+        self.assertNotIn(('gemini', '5h'), w.account_widgets['b'].quota_rows)
+        self.assertIn(('claude', '5h'), w.account_widgets['a'].quota_rows)
+        self.assertAlmostEqual(w.total_remaining, 1 / 3)
+        self.assertEqual(len(w.detail_quota_widgets), 4)
+
+    def test_weekly_threshold_setting_preserves_real_quota(self):
+        self.load_accounts()
+        w = self.window
+        w.quota_cache['b']['data']['groups'][0]['buckets'][1]['remaining'] = .005
+        w.draw_account_list()
+        before = w.total_remaining
+        def submit():
+            dialog = self.qapp.activeModalWidget()
+            dialog.findChild(QDoubleSpinBox, 'weeklyThresholdInput').setValue(0)
+            dialog.findChild(QPushButton, 'weeklyThresholdSave').click()
+        QTimer.singleShot(20, submit)
+        w.quota_display_settings()
+        self.assertEqual(self.controller.preferences['low-weekly-percent'], 0)
+        self.assertIn(('gemini', '5h'), w.account_widgets['b'].quota_rows)
+        self.assertEqual(w.total_remaining, before)
+
+    def test_failed_draft_check_does_not_save_or_refresh_clients(self):
+        import api_keys
+        api_keys.save_profile(self.controller, {'label': 'Existing', 'key': 'old-test-key',
+            'base_url': 'https://tokenharbor.ai', 'models': ['claude-haiku-5.5:free']})
+        before = (self.controller.data_dir / 'api-keys.dpapi').read_bytes()
+        def submit():
+            dialog = self.qapp.activeModalWidget()
+            dialog.findChild(QLineEdit, 'apiKeyInput').setText('rejected-draft-key')
+            dialog.findChild(QPushButton, 'apiSaveButton').click()
+            QTimer.singleShot(120, dialog.reject)
+        QTimer.singleShot(20, submit)
+        with patch('api_keys.verify_profile', side_effect=AccountError('test rejection')) as verify, patch.object(self.window, 'api_profiles_changed') as refresh:
+            self.window.edit_api_profile(api_keys.profiles(self.controller)[0])
+        verify.assert_called_once()
+        refresh.assert_not_called()
+        self.assertEqual((self.controller.data_dir / 'api-keys.dpapi').read_bytes(), before)
 
     def test_multilingual_previews_and_toolbar_fit(self):
         self.load_accounts();w=self.window

@@ -50,3 +50,10 @@ Google account cooldowns do not block independent API models. A key's own
 provider can still reject a request or impose its own rate limits.
 
 Provider reference: [TokenHarbor API](https://tokenharbor.ai/docs/api/curl).
+# Connection checks
+
+The key editor can check the first model with two short requests: directly at the
+provider and through the local gateway. Draft edits are not saved by the check;
+existing keys remain available while it runs. Failed checks restore the previous
+encrypted registry. Changed connections are checked before saving by default;
+you can turn this off to store a connection while the provider is offline.

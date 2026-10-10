@@ -1508,6 +1508,26 @@ _strings.update({
 })
 
 
+_strings.update({
+    'api_check': dict(en='Check key and model', ru='Проверить ключ и модель', uk='Перевірити ключ і модель', be='Праверыць ключ і мадэль', zh='检查密钥和模型'),
+    'api_check_on_save': dict(en='Check changed connections before saving', ru='Проверять изменённое подключение перед сохранением', uk='Перевіряти змінене підключення перед збереженням', be='Правяраць змененае падключэнне перад захаваннем', zh='保存前检查更改后的连接'),
+    'api_check_hint': dict(en='Checks the first model with two short requests: directly at the provider and through the local gateway.', ru='Первая модель проверяется двумя короткими запросами: к провайдеру и через локальный шлюз.', uk='Перша модель перевіряється двома короткими запитами: до провайдера й через локальний шлюз.', be='Першая мадэль правяраецца двума кароткімі запытамі: да правайдара і праз лакальны шлюз.', zh='对第一个模型发送两次简短请求：直接访问提供商，然后通过本地网关。'),
+    'api_checking': dict(en='Checking provider and local gateway…', ru='Проверка провайдера и локального шлюза…', uk='Перевірка провайдера й локального шлюзу…', be='Праверка правайдара і лакальнага шлюза…', zh='正在检查提供商和本地网关…'),
+    'api_check_ok': dict(en='Provider and gateway responded: {model}. Draft edits have not been saved.', ru='Провайдер и шлюз ответили: {model}. Изменения пока не сохранены.', uk='Провайдер і шлюз відповіли: {model}. Зміни ще не збережено.', be='Правайдар і шлюз адказалі: {model}. Змены яшчэ не захаваныя.', zh='提供商和网关已响应：{model}。草稿更改尚未保存。'),
+    'api_check_failed': dict(en='Connection test failed: {error}', ru='Проверка подключения не прошла: {error}', uk='Перевірка підключення не пройшла: {error}', be='Праверка падключэння не прайшла: {error}', zh='连接检查失败：{error}'),
+    'group_weekly_depleted': dict(en='Weekly quota below {percent}% · {count}', ru='Недельная квота ниже {percent}% · {count}', uk='Тижнева квота нижче {percent}% · {count}', be='Тыднёвая квота ніжэй {percent}% · {count}', zh='每周配额低于 {percent}% · {count}'),
+    'quota_display_settings': dict(en='Account list settings…', ru='Настроить список аккаунтов…', uk='Налаштувати список акаунтів…', be='Наладзіць спіс акаўнтаў…', zh='账户列表设置…'),
+    'quota_display_hint': dict(en='Move accounts below this weekly percentage to the bottom and hide their 5-hour rows in cards. 0% groups only empty weekly quotas. This changes the display, not routing eligibility.', ru='Перемещать аккаунты с недельным остатком ниже этого процента вниз и скрывать в карточках строки за 5 часов. 0% группирует только пустые недельные квоты. Настройка влияет на отображение, а не на доступ аккаунта к запросам.', uk='Переміщувати акаунти з тижневим залишком нижче цього відсотка вниз і приховувати в картках рядки за 5 годин. 0% групує лише порожні тижневі квоти. Налаштування змінює вигляд, а не доступність акаунтів.', be='Перамяшчаць акаўнты з тыднёвым астаткам ніжэй гэтага працэнта ўніз і хаваць у картках радкі за 5 гадзін. 0% групуе толькі пустыя тыднёвыя квоты. Налада ўплывае на выгляд, а не на даступнасць акаўнтаў.', zh='将每周剩余配额低于此比例的账户移到底部，并隐藏卡片中的5小时配额行。0%仅分组空配额。此设置只影响显示，不影响请求路由。'),
+    'quota_display_save': dict(en='Save', ru='Сохранить', uk='Зберегти', be='Захаваць', zh='保存'),
+})
+
+
+_strings.update({
+    'group_other_accounts': dict(en='Other accounts · {count}', ru='Остальные аккаунты · {count}', uk='Інші акаунти · {count}', be='Іншыя акаўнты · {count}', zh='其他账户 · {count}'),
+    'group_weekly_empty': dict(en='Weekly quota exhausted · {count}', ru='Недельная квота исчерпана · {count}', uk='Тижневу квоту вичерпано · {count}', be='Тыднёвая квота вычарпана · {count}', zh='每周配额已用尽 · {count}'),
+})
+
+
 def tr(key, **kwargs):
     """Return the translated string for *key* in the active language.
 

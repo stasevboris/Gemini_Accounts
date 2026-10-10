@@ -11,28 +11,69 @@ def reset_date(value):
         return None
 
 
+def weekly_threshold(preferences):
+    value = preferences.get('low-weekly-percent', 1)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
+        value = 1
+    return value / 100
+
+
+def weekly_depleted(value, threshold=.01):
+    return (isinstance(value, (int, float)) and not isinstance(value, bool) and
+            math.isfinite(value) and 0 <= value <= 1 and
+            (value < threshold if threshold else value == 0))
+
+
+def quota_entry(account, bucket, weekly, group, now=None):
+    """Apply explicit provider quota restrictions before pooling a model family."""
+    now = now or datetime.now(timezone.utc)
+    entry = {'remaining': bucket['remaining'], 'reset': bucket.get('reset'),
+             'weekly_remaining': weekly.get('remaining'), 'weekly_reset': weekly.get('reset')}
+    blocked = []
+    for cooldown in account.get('cooldowns') or []:
+        model = str(cooldown.get('model_key') or '').lower()
+        matches = cooldown.get('scope') == 'credential' or (
+            model.startswith('gemini') if group == 'gemini' else model.startswith(('claude', 'gpt')))
+        retry = reset_date(cooldown.get('retry_at'))
+        if matches and cooldown.get('reason') == 'quota' and retry and retry > now:
+            blocked.append(retry)
+    if blocked:
+        entry['remaining'] = 0
+        reset = reset_date(entry['reset'])
+        entry['reset'] = max(blocked + ([reset] if reset else [])).isoformat()
+    return entry
+
+
 def quota_projection(entries, now=None, exhausted_only=True):
     """Potential pooled quota after known resets; usage can change this estimate."""
     now = now or datetime.now(timezone.utc)
     if not entries:
         return []
-    total = sum(entry['remaining'] for entry in entries)
+    total = sum(0 if entry.get('weekly_remaining') == 0 else entry['remaining'] for entry in entries)
     increases = {}
     for entry in entries:
-        if entry['remaining'] >= 1 or (exhausted_only and entry['remaining'] != 0):
-            continue
-        moment = reset_date(entry.get('reset'))
-        if not moment or moment <= now:
-            continue
         weekly = entry.get('weekly_remaining')
-        if weekly is None:
-            continue
+        moment = reset_date(entry.get('reset'))
         if weekly == 0:
+            # A full 5h bucket is unusable while the weekly bucket is empty.
             weekly_reset = reset_date(entry.get('weekly_reset'))
             if not weekly_reset or weekly_reset <= now:
                 continue
-            moment = max(moment, weekly_reset)
-        increases[moment] = increases.get(moment, 0) + 1 - entry['remaining']
+            if moment:
+                moment = max(moment, weekly_reset)
+                increase = 1
+            else:
+                moment = weekly_reset
+                increase = entry['remaining']
+            if increase <= 0:
+                continue
+        else:
+            if entry['remaining'] >= 1 or (exhausted_only and entry['remaining'] != 0):
+                continue
+            if weekly is None or not moment or moment <= now:
+                continue
+            increase = 1 - entry['remaining']
+        increases[moment] = increases.get(moment, 0) + increase
     result = []
     for moment, increase in sorted(increases.items()):
         total += increase

@@ -81,9 +81,17 @@ def install(payload, root, shortcuts=True, automatic=False):
         atomic_write(config_path, yaml.safe_dump(config, sort_keys=False).encode())
     from native_reasoning import remove_legacy_summary_rule
     config = yaml.safe_load(config_path.read_text('utf-8-sig'))
-    if remove_legacy_summary_rule(config):
+    changed = remove_legacy_summary_rule(config)
+    catalog_source = payload / 'cliproxy-models.json'
+    if catalog_source.exists():
+        catalog_target = proxy / 'cliproxy-models.json'
+        atomic_write(catalog_target, catalog_source.read_bytes())
+        if config.setdefault('models', {}).get('catalog') != str(catalog_target.resolve()):
+            config['models']['catalog'] = str(catalog_target.resolve())
+            changed = True
+    if changed:
         atomic_write(config_path, yaml.safe_dump(config, sort_keys=False).encode())
-    metadata = {'version': '1.3.5'}
+    metadata = {'version': '1.3.6'}
     native_manifest = payload / 'native-build.json'
     if native_manifest.exists():
         native_build = json.loads(native_manifest.read_text('utf-8'))

@@ -5,3 +5,10 @@ The installer bundles CLIProxyAPI 8.0.16 from https://github.com/router-for-me/C
 The executables also use Python (PSF license), PySide6 / Qt 6 (LGPL-3.0; PySide6 also offers GPL licensing), PyYAML (MIT), bcrypt (Apache-2.0), cryptography (Apache-2.0 / BSD), and tzdata (Apache-2.0 / public-domain IANA data). PyInstaller uses GPL with its bootloader distribution exception. See the respective projects and dependency lists in requirements.txt and requirements-cli.txt. The account manager uses Qt; the installer uses Python's standard-library Tkinter.
 
 Google, Gemini, Antigravity, Claude and Codex are names of third-party products. This project is independent of their vendors.
+
+# Additional upstream improvements
+
+Quota availability, model catalog and client-routing improvements were adapted from
+[nikitaeight24family/GeminiAccounts](https://github.com/nikitaeight24family/GeminiAccounts),
+reviewed at commit `24877921bc30642c5bfc86ff03bc640212507fef` (MIT).
+The PySide6 interface, translations and independent encrypted API profiles are retained.

@@ -118,6 +118,8 @@ class Controller:
         config = yaml.safe_load(config_path.read_text('utf-8-sig'))
         from native_reasoning import remove_legacy_summary_rule
         reasoning_changed = remove_legacy_summary_rule(config)
+        from runtime import install_model_catalog
+        reasoning_changed = install_model_catalog(self, config) or reasoning_changed
         host = config.get('server', {}).get('host', '')
         if host not in ('127.0.0.1', 'localhost'):
             raise AccountError('The connection must be restricted to this computer.')
@@ -378,10 +380,10 @@ class Controller:
         if activity_path.exists():
             from activity import Activity
             Activity(activity_path).pin_model_aliases({entry['alias']: entry['name'] for entry in entries})
-        targets = {model: claude for model in choices['claude']}
-        targets.update({'claude-sonnet-4-5': gemini, 'gemini-selected': gemini, 'claude-selected': claude})
+        targets = {'claude-sonnet-4-5': gemini, 'gemini-selected': gemini, 'claude-selected': claude}
         # A model must resolve directly to itself, never through a self-alias.
-        entries = [entry for entry in entries if entry['alias'] not in targets]
+        real_models = set(choices['claude']) - {'claude-sonnet-4-5', 'claude-haiku-4-5'}
+        entries = [entry for entry in entries if entry['alias'] not in targets and entry['alias'] not in real_models]
         from model_names import model_name
         for alias, target in targets.items():
             if alias != target:

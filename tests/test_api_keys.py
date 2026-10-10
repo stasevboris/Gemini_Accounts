@@ -67,23 +67,23 @@ class ApiKeyTests(unittest.TestCase):
         path = client.paths()['claude_desktop'][2]
         before = client.read_json(path)
         models = before['inferenceModels']
-        self.assertEqual(len(models), 3)
+        self.assertEqual(sum(m['name'].startswith('api/') for m in models), 1)
         self.assertEqual(models[1]['name'], 'claude-selected')
         self.assertIn('Opus', models[1]['labelOverride'])
         self.assertTrue(models[1]['isFamilyDefault'])
-        self.assertFalse(models[2]['isFamilyDefault'])
-        self.assertTrue(models[2]['name'].startswith('api/'))
+        self.assertFalse(models[-1]['isFamilyDefault'])
+        self.assertTrue(models[-1]['name'].startswith('api/'))
         api_keys.save_profile(self.c, self.profile('Gemini API', 'gemini-3-flash'))
         self.assertTrue(client.refresh_desktop_model_labels())
         after = client.read_json(path)
         self.assertEqual(after['inferenceModels'][:2], models[:2])
         self.assertEqual(after['inferenceGatewayApiKey'], before['inferenceGatewayApiKey'])
-        self.assertEqual(len(after['inferenceModels']), 4)
+        self.assertEqual(sum(m['name'].startswith('api/') for m in after['inferenceModels']), 2)
         self.assertFalse(client.refresh_desktop_model_labels())
         for row in api_keys.profiles(self.c):
             api_keys.remove_profile(self.c, row['id'])
         client.refresh_desktop_model_labels()
-        self.assertEqual(client.read_json(path)['inferenceModels'], models[:2])
+        self.assertEqual(client.read_json(path)['inferenceModels'], [m for m in models if not m['name'].startswith('api/')])
 
     def test_usage_handles_fragmented_sse_and_persists_only_metrics(self):
         usage = api_keys.Usage()

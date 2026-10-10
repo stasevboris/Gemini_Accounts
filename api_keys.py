@@ -4,6 +4,11 @@ import secrets
 import threading
 import urllib.parse
 import urllib.request
+import urllib.error
+import time
+from contextlib import contextmanager
+
+_PROFILE_LOCK = threading.RLock()
 from datetime import datetime, timezone
 
 
@@ -27,11 +32,12 @@ def profiles(controller, private=False):
             'base_url': 'https://tokenharbor.ai', 'key': key, 'models': [MODEL], 'enabled': True}] if key else []
     except (OSError, ValueError, AccountError):
         rows = []
-    return [dict(row) if private else {k: v for k, v in row.items() if k != 'key'} for row in rows]
+    return [dict(row) if private else {k: v for k, v in row.items() if k != 'key'}
+            for row in rows if private or not row.get('id', '').startswith('test-')]
 
 
-def save_profile(controller, row):
-    from backend import atomic_write, dpapi, AccountError
+def validated_profile(controller, row):
+    from backend import AccountError
     row = dict(row)
     rows = profiles(controller, private=True)
     old = next((r for r in rows if r['id'] == row.get('id')), {})
@@ -51,15 +57,94 @@ def save_profile(controller, row):
     row.setdefault('kind', 'tokenharbor')
     if row['kind'] not in ('tokenharbor', 'anthropic'):
         raise AccountError('Unsupported API protocol.')
-    rows = [r for r in rows if r['id'] != row['id']] + [row]
+    return row
+
+
+def _write_profiles(controller, rows):
+    from backend import atomic_write, dpapi
     atomic_write(controller.data_dir / 'api-keys.dpapi', dpapi(json.dumps({'profiles': rows}).encode()))
+
+
+def save_profile(controller, row):
+    with _PROFILE_LOCK:
+        row = validated_profile(controller, row)
+        rows = [r for r in profiles(controller, private=True) if r['id'] != row['id']] + [row]
+        _write_profiles(controller, rows)
     return row['id']
 
 
 def remove_profile(controller, ident):
-    from backend import atomic_write, dpapi
-    rows = [r for r in profiles(controller, private=True) if r['id'] != ident]
-    atomic_write(controller.data_dir / 'api-keys.dpapi', dpapi(json.dumps({'profiles': rows}).encode()))
+    with _PROFILE_LOCK:
+        rows = [r for r in profiles(controller, private=True) if r['id'] != ident]
+        _write_profiles(controller, rows)
+
+
+@contextmanager
+def temporary_profile(controller, row):
+    """A unique test route leaves existing profiles and in-flight requests intact."""
+    from backend import atomic_write
+    path = controller.data_dir / 'api-keys.dpapi'
+    with _PROFILE_LOCK:
+        before = path.read_bytes() if path.exists() else None
+        temporary = dict(row, id='test-' + secrets.token_hex(8), enabled=True)
+        staged = profiles(controller, private=True) + [temporary]
+        _write_profiles(controller, staged)
+    try:
+        yield temporary
+    finally:
+        with _PROFILE_LOCK:
+            current = profiles(controller, private=True)
+            if current == staged:
+                if before is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    atomic_write(path, before)
+            else:
+                _write_profiles(controller, [p for p in current if p['id'] != temporary['id']])
+
+
+def _probe_message(url, model, headers, stage):
+    from backend import AccountError
+    from response_guard import usable_message
+    request = urllib.request.Request(url, data=json.dumps({'model': model, 'max_tokens': 16,
+        'stream': False, 'messages': [{'role': 'user', 'content': 'Reply only OK.'}]}).encode(),
+        headers={**headers, 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=20) as response:
+            chunks, deadline, size = [], time.monotonic() + 20, 0
+            while True:
+                if time.monotonic() > deadline:
+                    raise TimeoutError()
+                chunk = response.read1(65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > 1024 * 1024:
+                    raise ValueError('Test response too large')
+                chunks.append(chunk)
+            value = json.loads(b''.join(chunks))
+            if response.status != 200 or not isinstance(value, dict) or value.get('type') != 'message' or not usable_message(value):
+                raise AccountError(stage + ' returned no usable response.')
+    except urllib.error.HTTPError as error:
+        raise AccountError(stage + ' rejected the test (HTTP ' + str(error.code) + ').') from None
+    except (OSError, ValueError):
+        raise AccountError(stage + ' could not complete the connection test.') from None
+
+
+def verify_profile(controller, row):
+    """Check the draft at the provider and gateway without saving the user's edits."""
+    from backend import AccountError
+    row = validated_profile(controller, row)
+    headers = {'x-api-key': row['key']} if row['kind'] == 'anthropic' else {'Authorization': 'Bearer ' + row['key']}
+    _probe_message(row['base_url'] + '/v1/messages', row['models'][0], headers, 'API provider')
+    try:
+        local_key = (controller.proxy_dir / 'client-key.txt').read_text('utf-8-sig').strip()
+    except OSError:
+        raise AccountError('The local gateway is not installed.') from None
+    with temporary_profile(controller, row) as temporary:
+        _probe_message('http://127.0.0.1:8317/v1/messages', model_id(temporary, row['models'][0]),
+                       {'Authorization': 'Bearer ' + local_key}, 'Local gateway')
+    return {'provider': True, 'gateway': True, 'model': row['models'][0]}
 
 
 def resolve(rows, model):
@@ -80,7 +165,7 @@ def catalog_rows(rows):
     from model_names import model_name
     return [{'id': model_id(row, raw), 'model': raw, 'profile_id': row['id'],
         'label': 'API · ' + row['label'] + ' · ' + model_name(raw, {})}
-        for row in rows if row.get('enabled', True) for raw in row['models']]
+        for row in rows if row.get('enabled', True) and not row['id'].startswith('test-') for raw in row['models']]
 
 
 def fetch_models(row):

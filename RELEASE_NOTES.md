@@ -1,3 +1,13 @@
+# Gemini Accounts 1.3.6 — Quota availability and client model menus
+
+- Corrects pooled quota and forecasts when a weekly window is empty or the provider blocks that model family.
+- Adds a configurable grouping threshold for low weekly balances; this display setting does not disable accounts or discard usable quota.
+- Adds all available Google text models, a dedicated Flash slot and distinct Flash reasoning variants to connected client menus, while retaining independent API models.
+- Repairs approved Claude Desktop gateway routes after restart and keeps its fixed Haiku health probe separate from actual Google Haiku requests.
+- Extends the Codex model catalog while preserving existing model entries and configuration backups.
+- Adds provider and local-gateway checks in the API-key editor. Failed or cancelled draft checks preserve existing keys; checks use two short requests for the first model.
+- Retains PySide6, five interface languages, themes and the callback fix. Client menus are updated through Connect applications with the owner's approval.
+
 # Gemini Accounts 1.3.5 — Independent API keys
 
 - Adds a separate API keys tab with encrypted profiles, add/edit/pause/remove controls, and per-key response, error and token statistics.

@@ -5,6 +5,7 @@ conservatively within Gemini's 1,048,576-token input window.
 """
 CONTEXT_WINDOWS = {
     'claude-haiku-4-5': 200000,
+    'claude-haiku-5-5-tokenharbor-free': 1000000,
     'claude-sonnet-4-6': 200000,
     'claude-opus-4-6-thinking': 200000,
     'claude-sonnet-5-5-high': 1000000,
@@ -14,9 +15,18 @@ CONTEXT_WINDOWS = {
     'gemini-3-flash': 1048576,
     'gemini-3.1-flash-lite': 1048576,
     'gemini-3.5-flash-lite': 1048576,
+    'gemini-3-flash-agent': 1048576,
+    'gemini-3.5-flash-low': 1048576,
+    'gemini-3.5-flash-extra-low': 1048576,
     'gemini-3.6-flash-high': 1048576,
     'gemini-3.7-flash-high': 1048576,
     'gemini-3.8-flash-high': 1048576,
+    'gemini-3.6-flash-medium': 1048576,
+    'gemini-3.6-flash-low': 1048576,
+    'gemini-3.7-flash-medium': 1048576,
+    'gemini-3.7-flash-low': 1048576,
+    'gemini-3.8-flash-medium': 1048576,
+    'gemini-3.8-flash-low': 1048576,
     'gpt-oss-120b-medium': 114000,
 }
 

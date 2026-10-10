@@ -18,7 +18,7 @@ import bcrypt
 import yaml
 from backend import AccountError, atomic_write, dpapi
 
-VERSION = '1.3.5'
+VERSION = '1.3.6'
 UPSTREAM_VERSION = '8.0.16'
 ARCHIVES = {
     ('Windows', 'amd64'): ('windows_amd64.zip', 'e0d999703c9af70067b15bf50e6521e76392da604d1543541361e6891c676c43'),
@@ -79,6 +79,20 @@ def install_native(controller):
     return target
 
 
+def install_model_catalog(controller, config):
+    source = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets' / 'cliproxy-models.json'
+    target = controller.proxy_dir / 'cliproxy-models.json'
+    if not source.exists():
+        return False
+    controller.proxy_dir.mkdir(parents=True, exist_ok=True)
+    if not target.exists() or target.read_bytes() != source.read_bytes():
+        atomic_write(target, source.read_bytes())
+    if config.setdefault('models', {}).get('catalog') == str(target.resolve()):
+        return False
+    config['models']['catalog'] = str(target.resolve())
+    return True
+
+
 def initialize(controller):
     controller.proxy_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     controller.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -105,7 +119,9 @@ def initialize(controller):
         atomic_write(config_path, yaml.safe_dump(config, sort_keys=False).encode())
     from native_reasoning import remove_legacy_summary_rule
     config = yaml.safe_load(config_path.read_text('utf-8-sig'))
-    if remove_legacy_summary_rule(config):
+    changed = remove_legacy_summary_rule(config)
+    changed = install_model_catalog(controller, config) or changed
+    if changed:
         atomic_write(config_path, yaml.safe_dump(config, sort_keys=False).encode())
     return config_path
 

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QGraphicsOpacityEffect,
     QHBoxLayout, QLabel, QPushButton, QScrollArea, QFrame, QSplitter,
     QStackedWidget, QLineEdit, QComboBox, QCheckBox, QTextEdit, QDialog,
-    QMessageBox, QFileDialog, QInputDialog, QSizePolicy, QToolTip, QProgressBar, QGridLayout, QLayout, QSystemTrayIcon, QMenu)
+    QMessageBox, QFileDialog, QInputDialog, QSizePolicy, QToolTip, QProgressBar, QGridLayout, QLayout, QSystemTrayIcon, QMenu, QDoubleSpinBox)
 from PySide6.QtCore import (Qt, Signal, QObject, QRunnable, QThreadPool, QTimer,
     QSize, QRectF, QPointF, QMargins, QPropertyAnimation, QEasingCurve)
 from PySide6.QtGui import (QIcon, QFont, QFontMetrics, QColor, QPainter, QPen,
@@ -21,7 +21,7 @@ from PySide6.QtGui import (QIcon, QFont, QFontMetrics, QColor, QPainter, QPen,
 from PySide6.QtNetwork import QNetworkInterface
 from backend import Controller, AccountError
 from activity import Activity
-from routing import rank_accounts, quota_projection
+from routing import rank_accounts, quota_projection, quota_entry, weekly_threshold, weekly_depleted
 from integrations import Integrations
 import api_keys
 from model_names import model_name
@@ -892,6 +892,16 @@ class App(QMainWindow):
         layout.addWidget(enabled)
         load = QPushButton(tr('api_load_models'))
         layout.addWidget(load)
+        check = QPushButton(tr('api_check'))
+        check.setObjectName('apiCheckButton')
+        layout.addWidget(check)
+        check_on_save = QCheckBox(tr('api_check_on_save'))
+        check_on_save.setChecked(True)
+        layout.addWidget(check_on_save)
+        check_hint = QLabel(tr('api_check_hint'))
+        check_hint.setWordWrap(True)
+        check_hint.setProperty('class', 'muted')
+        layout.addWidget(check_hint)
         message = QLabel('')
         message.setWordWrap(True)
         layout.addWidget(message)
@@ -932,14 +942,51 @@ class App(QMainWindow):
         save = QPushButton(tr('api_save'))
         save.setObjectName('apiSaveButton')
         layout.addWidget(save)
-        def apply():
+        def persist(value):
+            api_keys.save_profile(self.controller, value)
+            dialog.accept()
+            self.api_profiles_changed()
+        def verify(saving=False):
             try:
-                api_keys.save_profile(self.controller, values())
+                value = api_keys.validated_profile(self.controller, values())
             except AccountError:
                 message.setText(tr('api_invalid'))
                 return
-            dialog.accept()
-            self.api_profiles_changed()
+            controls = [label, kind, base, key, models, enabled, load, check, check_on_save, save]
+            for control in controls:
+                control.setEnabled(False)
+            message.setText(tr('api_checking'))
+            def operation():
+                try:
+                    return api_keys.verify_profile(self.controller, value), None
+                except AccountError as error:
+                    return None, str(error)
+            def done(result):
+                if closed[0]:
+                    return
+                for control in controls:
+                    control.setEnabled(True)
+                checked, error = result
+                if error:
+                    message.setText(tr('api_check_failed', error=error))
+                elif saving:
+                    persist(value)
+                else:
+                    message.setText(tr('api_check_ok', model=checked['model']))
+            self.work(operation, done)
+        def apply():
+            try:
+                value = api_keys.validated_profile(self.controller, values())
+            except AccountError:
+                message.setText(tr('api_invalid'))
+                return
+            old = next((p for p in api_keys.profiles(self.controller, private=True) if p['id'] == row.get('id')), {})
+            changed = any(value.get(k) != old.get(k) for k in ('key', 'kind', 'base_url', 'models'))
+            if changed and check_on_save.isChecked():
+                verify(saving=True)
+            else:
+                persist(value)
+        check.clicked.connect(lambda: verify())
         save.clicked.connect(apply)
         self.theme.apply(dialog)
         dialog.exec()
@@ -954,6 +1001,7 @@ class App(QMainWindow):
         def load():
             if prepare or not self.controller.key:
                 self.controller.prepare()
+            self.integrations.reconcile_desktop_routes()
             return self.controller.accounts()
         self.work(load, self.loaded, mutation=True)
 
@@ -993,11 +1041,11 @@ class App(QMainWindow):
 
     def draw_account_list(self):
         self.update_total_quota()
-        accounts = sorted(self.items, key=lambda a: (
-            a.get('access_issue') != 'verification',
-            0 if a.get('access_issue') == 'verification' else self.account_reset_order(a['name'])))
+        accounts = sorted(self.items, key=self.account_sort_key)
         names = [a['name'] for a in accounts]
         pending_count = sum(1 for a in accounts if a.get('access_issue') == 'verification')
+        depleted_count = sum(a.get('access_issue') != 'verification' and self.account_weekly_depleted(a['name']) for a in accounts)
+        ready_count = len(accounts) - pending_count - depleted_count
 
         # Clear existing widgets
         while self.account_list_layout.count() > 1:
@@ -1009,14 +1057,22 @@ class App(QMainWindow):
 
         t = self.theme.colors()
         for index, account in enumerate(accounts):
-            if pending_count and index in (0, pending_count):
-                pending = index == 0
-                if not pending:
+            section = None
+            if pending_count and index == 0:
+                section = (tr('group_verification_required', count=pending_count), True)
+            elif ready_count and index == pending_count and (pending_count or depleted_count):
+                section = (tr('group_other_accounts', count=ready_count), False)
+            elif depleted_count and index == pending_count + ready_count:
+                threshold = weekly_threshold(self.controller.preferences) * 100
+                section = (tr('group_weekly_empty', count=depleted_count) if threshold == 0 else
+                           tr('group_weekly_depleted', count=depleted_count, percent=f'{threshold:g}'), True)
+            if section:
+                if index:
                     sep = QFrame()
                     sep.setFixedHeight(1)
                     sep.setStyleSheet(f'background-color: {t["separator"]};')
                     self.account_list_layout.insertWidget(self.account_list_layout.count() - 1, sep)
-                title = tr('group_verification_required', count=pending_count) if pending else tr('group_ready_accounts', count=len(accounts) - pending_count)
+                title, pending = section
                 group_label = QLabel(title)
                 group_label.setFont(QFont('Segoe UI', 11, QFont.Bold))
                 group_label.setStyleSheet(f'color: {t["warn_text"] if pending else t["muted"]};')
@@ -1044,7 +1100,7 @@ class App(QMainWindow):
             # Quota rows in card
             groups = self.quota_groups(name)
             for group in groups:
-                for bucket in sorted(group['buckets'], key=lambda b: b['window'] != '5h'):
+                for bucket in sorted(self.visible_quota_buckets(group), key=lambda b: b['window'] != '5h'):
                     remaining = bucket.get('remaining')
                     text = self.sidebar_quota_text(group, bucket)
                     qrow = QuotaRowWidget(group['kind'], bucket['window'])
@@ -1092,6 +1148,21 @@ class App(QMainWindow):
         marker = '!' if account.get('access_issue') or self.account_connection_issue(account) else 'Ⅱ' if account.get('disabled') else '●'
         return marker + '  ' + self.display_name(account)
 
+    def account_weekly_depleted(self, name):
+        gemini = next((group for group in self.quota_groups(name) if group['kind'] == 'gemini'), {})
+        weekly = next((bucket.get('remaining') for bucket in gemini.get('buckets', []) if bucket['window'] == 'weekly'), None)
+        return weekly_depleted(weekly, weekly_threshold(self.controller.preferences))
+
+    def account_sort_key(self, account):
+        if account.get('access_issue') == 'verification':
+            return (0, 0)
+        return (2 if self.account_weekly_depleted(account['name']) else 1, self.account_reset_order(account['name']))
+
+    def visible_quota_buckets(self, group):
+        weekly = next((bucket.get('remaining') for bucket in group['buckets'] if bucket['window'] == 'weekly'), None)
+        hide = weekly_depleted(weekly, weekly_threshold(self.controller.preferences))
+        return [bucket for bucket in group['buckets'] if not (hide and bucket['window'] == '5h')]
+
     @staticmethod
     def account_connection_issue(account):
         return account.get('access_issue') == 'login' or (
@@ -1134,11 +1205,12 @@ class App(QMainWindow):
 
     def account_reset_order(self, name):
         resets = []
+        window = 'weekly' if self.account_weekly_depleted(name) else '5h'
         for group in self.quota_groups(name):
             if group.get('kind') != 'gemini':
                 continue
             for bucket in group['buckets']:
-                if bucket.get('window') != '5h':
+                if bucket.get('window') != window:
                     continue
                 try:
                     reset = datetime.fromisoformat(bucket['reset'].replace('Z', '+00:00'))
@@ -1395,9 +1467,9 @@ class App(QMainWindow):
                     bucket = next(b for b in group['buckets'] if b['window'] == '5h')
                     v = bucket.get('remaining')
                     if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1:
-                        values.append(v)
-                        entries.append({'remaining': v, 'reset': bucket.get('reset'),
-                            'weekly_remaining': weekly.get('remaining'), 'weekly_reset': weekly.get('reset')})
+                        entry = quota_entry(account, bucket, weekly, 'gemini')
+                        values.append(0 if entry.get('weekly_remaining') == 0 else entry['remaining'])
+                        entries.append(entry)
 
         # Weekly
         weekly_remaining = sum(weekly_values) / len(weekly_values) if weekly_values else None
@@ -2280,6 +2352,9 @@ class App(QMainWindow):
         apply_btn.setProperty('primary', True)
         apply_btn.clicked.connect(apply)
         dl.addWidget(apply_btn)
+        quota_settings = QPushButton(tr('quota_display_settings'))
+        quota_settings.clicked.connect(self.quota_display_settings)
+        dl.addWidget(quota_settings)
 
         def restore():
             reply = QMessageBox.question(dialog, tr('confirm_restore_title'),
@@ -2301,6 +2376,33 @@ class App(QMainWindow):
         dl.addWidget(restore_btn)
         dl.addStretch()
         dialog.show()
+
+    def quota_display_settings(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr('quota_display_settings'))
+        dialog.setMinimumWidth(430)
+        layout = QVBoxLayout(dialog)
+        hint = QLabel(tr('quota_display_hint'))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        threshold = QDoubleSpinBox()
+        threshold.setObjectName('weeklyThresholdInput')
+        threshold.setRange(0, 100)
+        threshold.setDecimals(1)
+        threshold.setSuffix(' %')
+        threshold.setValue(weekly_threshold(self.controller.preferences) * 100)
+        layout.addWidget(threshold)
+        save = QPushButton(tr('quota_display_save'))
+        save.setObjectName('weeklyThresholdSave')
+        def apply():
+            self.controller.preferences['low-weekly-percent'] = threshold.value()
+            self.controller.save()
+            self.draw_account_list()
+            dialog.accept()
+        save.clicked.connect(apply)
+        layout.addWidget(save)
+        self.theme.apply(dialog)
+        dialog.exec()
 
     # ── Theme ─────────────────────────────────────────────────────────
 
