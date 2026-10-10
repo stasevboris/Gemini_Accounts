@@ -16,3 +16,9 @@ activity.json
 quota-starts.json
 *.log
 build-release.log
+
+# Разрешаем служебные скрипты в папке build
+!build/prepare_login_fix.py
+!build/login-fix/
+build/login-fix/*
+!build/login-fix/export_patch.py
