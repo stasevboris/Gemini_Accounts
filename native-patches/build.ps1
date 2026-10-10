@@ -11,7 +11,7 @@ $env:GOCACHE=Join-Path $taskRoot 'build/login-fix/gocache'
 $env:GOMODCACHE=Join-Path $taskRoot 'build/login-fix/gomodcache'
 Push-Location -LiteralPath $metadata.source
 try {
-    git apply (Join-Path $PSScriptRoot 'callback-port.patch')
+    git apply --ignore-whitespace --ignore-space-change (Join-Path $PSScriptRoot 'callback-port.patch')
     if ($LASTEXITCODE -ne 0) { throw 'Native patch application failed' }
     & $goFix test ./internal/api/handlers/management -run 'Test.*(OAuth|Callback|RequestCodexToken)' -count=1
     if ($LASTEXITCODE -ne 0) { throw 'Native OAuth tests failed' }
