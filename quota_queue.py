@@ -5,6 +5,7 @@ import queue
 import secrets
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +16,8 @@ from model_context import strip_context_suffix
 from response_guard import StreamProbe, usable_message
 from gateway_diagnostics import Diagnostics
 from provider_errors import failure_reason, provider_error_metadata
+import tokenharbor
+import api_keys
 
 PING = b'event: ping\ndata: {"type":"ping"}\n\n'
 HOP = {'connection', 'transfer-encoding', 'content-length', 'keep-alive',
@@ -22,6 +25,10 @@ HOP = {'connection', 'transfer-encoding', 'content-length', 'keep-alive',
 
 
 SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK"
+
+
+class ProviderConfigurationError(OSError):
+    pass
 
 
 def normalize_sdk_system(request):
@@ -70,6 +77,9 @@ def quota_wait(files, model, aliases, now=None):
     now = time.time() if now is None else now
     model = strip_context_suffix(model)
     model = aliases.get(model, model)
+    if api_keys.is_model(model):
+        # Google credential cooldowns have no bearing on this independent API.
+        return None
     quota = []
     enabled = [a for a in files if not a.get('disabled') and
                a.get('provider', a.get('type')) == 'antigravity']
@@ -112,6 +122,9 @@ class QueueServer(ThreadingHTTPServer):
         self.heartbeat_seconds = 10
         self.verifications_path = None
         self.aliases_checked = 0
+        self.tokenharbor_key = lambda: None
+        self.api_profiles = lambda: []
+        self.api_stats = api_keys.Stats()
 
     def refresh_aliases(self):
         # Hot model selection must also update quota-wait model scoping.
@@ -237,9 +250,13 @@ class Handler(BaseHTTPRequestHandler):
         self.request_id = secrets.token_hex(8)
         self.trace_started = time.monotonic()
         self.response_bytes = 0
+        self.api_profile = None
+        self.api_usage = api_keys.Usage()
+        self.api_status = 502
+        self.api_complete = False
         self.keepalive = PING if self.path.split('?')[0] == '/v1/messages' else b': keep-alive\n\n'
         tokens = [self.headers.get('x-api-key', ''), self.headers.get('Authorization', '').removeprefix('Bearer ')]
-        if self.path in ('/v0/management/quota-wait', '/v0/management/diagnostics', '/v0/management/update-lock'):
+        if self.path in ('/v0/management/quota-wait', '/v0/management/diagnostics', '/v0/management/update-lock', '/v0/management/api-key-stats'):
             if not any(secrets.compare_digest(token.encode(), self.server.key.encode()) for token in tokens):
                 self.json_reply(401, {'error': {'type': 'authentication_error', 'message': 'Unauthorized'}})
                 return
@@ -259,7 +276,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.updating = True
                 self.json_reply(200, {'locked':True})
                 return
-            self.json_reply(200, self.server.snapshot() if self.path.endswith('quota-wait') else dict(self.server.diagnostics.snapshot(), **self.server.snapshot()))
+            if self.path.endswith('api-key-stats'):
+                self.json_reply(200, self.server.api_stats.snapshot())
+            else:
+                self.json_reply(200, self.server.snapshot() if self.path.endswith('quota-wait') else dict(self.server.diagnostics.snapshot(), **self.server.snapshot()))
+            return
+        if self.command == 'GET' and self.path.split('?')[0] == '/v1/models':
+            if not any(secrets.compare_digest(token.encode(), key.encode()) for token in tokens for key in self.server.client_keys):
+                self.json_reply(401, {'error': {'type': 'authentication_error', 'message': 'Invalid API key'}})
+                return
+            self.model_catalog()
             return
         self.trace('received', method=self.command, path=self.path.split('?')[0])
         size = int(self.headers.get('Content-Length', '0'))
@@ -322,7 +348,8 @@ class Handler(BaseHTTPRequestHandler):
                 accounts = []
                 try:
                     self.server.refresh_aliases()
-                    accounts = self.server.accounts()
+                    external = api_keys.is_model(self.server.aliases.get(model, model))
+                    accounts = [] if external else self.server.accounts()
                     reset = quota_wait(accounts, model, self.server.aliases)
                 except (OSError, ValueError, http.client.HTTPException):
                     reset = None
@@ -347,17 +374,23 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.lock:
                     self.server.jobs[ident].update(state='running', retry_at=None)
                 attempt += 1
-                self.trace('upstream_started', attempt=attempt, model=model, upstream_model=self.server.aliases.get(model, model))
-                conn, response = self.await_upstream(lambda: self.open_upstream(body), stream,
+                actual_model = self.server.aliases.get(model, model)
+                external = api_keys.is_model(actual_model)
+                self.trace('upstream_started', attempt=attempt, model=model, upstream_model=actual_model,
+                           provider='api' if external else 'antigravity')
+                conn, response = self.await_upstream(lambda: self.open_upstream(body, model=model), stream,
                                                      cleanup=lambda result: result[0].close())
                 started = self.response_started
+                self.api_status = response.status
                 self.trace('upstream_headers', attempt=attempt, status=response.status)
                 try:
                     if response.status in (429, 403, 503):
                         error = response.read()
-                        self.trace('provider_rejected', status=response.status, reason=failure_reason(response.status, error) or 'Provider rejected request', **provider_error_metadata(error))
+                        reason = 'API provider rejected request' if external else failure_reason(response.status, error) or 'Provider rejected request'
+                        self.trace('provider_rejected', status=response.status, reason=reason,
+                                   provider='api' if external else 'antigravity', **provider_error_metadata(error))
                         try:
-                            reset = quota_wait(self.server.accounts(), model, self.server.aliases)
+                            reset = None if external else quota_wait(self.server.accounts(), model, self.server.aliases)
                         except (OSError, ValueError, http.client.HTTPException):
                             reset = None
                         if response.status == 429:
@@ -377,6 +410,7 @@ class Handler(BaseHTTPRequestHandler):
                         if reset:
                             continue
                         self.deliver(response, error, started, stream)
+                        self.api_complete = True
                         return
                     if guarded and response.status == 200:
                         try:
@@ -385,6 +419,7 @@ class Handler(BaseHTTPRequestHandler):
                             self.recovery_error(stream)
                             return
                         if not valid:
+                            self.api_status = 502
                             self.trace('empty_response', attempt=attempt)
                             empty_retries += 1
                             if empty_retries <= 2:
@@ -392,11 +427,18 @@ class Handler(BaseHTTPRequestHandler):
                                     self.server.jobs[ident].update(recovery_reason='empty_response', attempt=empty_retries + 1)
                                 continue
                             self.recovery_error(stream)
+                        else:
+                            self.api_complete = True
                         return
                     self.deliver(response, None, started, stream)
+                    self.api_complete = True
                     return
                 finally:
                     conn.close()
+                    self.record_api_attempt()
+        except ProviderConfigurationError as error:
+            self.trace('provider_configuration_error', status=503, provider='api')
+            self.provider_configuration_error(str(error), stream)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError) as error:
             self.trace('connection_ended', exception_type=type(error).__name__)
             self.close_connection = True
@@ -412,11 +454,50 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
         finally:
+            self.record_api_attempt()
             self.trace('finished', attempt=attempt)
             with self.server.lock:
                 self.server.jobs.pop(ident, None)
 
-    def open_upstream(self, body):
+    def open_upstream(self, body, model=None):
+        actual = self.server.aliases.get(strip_context_suffix(model), strip_context_suffix(model))
+        if api_keys.is_model(actual):
+            profile, raw = api_keys.resolve(self.server.api_profiles(), actual)
+            # Accept the old direct model ID during migration, without aliasing Google models.
+            if profile is None and tokenharbor.is_model(actual) and self.server.tokenharbor_key():
+                profile = {'id': 'tokenharbor', 'kind': 'tokenharbor', 'base_url': 'https://' + tokenharbor.HOST,
+                           'key': self.server.tokenharbor_key()}
+                raw = actual
+            if profile is None or not profile.get('key'):
+                raise ProviderConfigurationError('API key is missing or disabled. Add it in the API keys tab (TokenHarbor API key).')
+            self.api_profile = profile['id']
+            self.api_model = raw
+            self.api_usage = api_keys.Usage()
+            self.api_status = 502
+            self.api_complete = False
+            self.api_started = time.monotonic()
+            request = json.loads(body)
+            request['model'] = raw
+            body = json.dumps(request, ensure_ascii=False).encode()
+            # Preserve the client's protocol: Anthropic messages and SSE must
+            # remain Anthropic, while OpenAI requests keep their own endpoint.
+            headers = {k: v for k, v in self.headers.items()
+                       if k.lower() not in HOP | {'authorization', 'x-api-key', 'cookie', 'x-goog-api-key'}}
+            if profile.get('kind') == 'anthropic':
+                headers['x-api-key'] = profile['key']
+                headers.setdefault('anthropic-version', '2023-06-01')
+            else:
+                headers['Authorization'] = 'Bearer ' + profile['key']
+            headers['Content-Type'] = 'application/json'
+            base = urllib.parse.urlsplit(profile['base_url'])
+            conn = http.client.HTTPSConnection(base.netloc, timeout=60)
+            try:
+                conn.request(self.command, base.path.rstrip('/') + self.path, body=body, headers=headers)
+                return conn, conn.getresponse()
+            except Exception:
+                conn.close()
+                raise
+
         conn = http.client.HTTPConnection(*self.server.upstream, timeout=600)
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
         try:
@@ -434,6 +515,7 @@ class Handler(BaseHTTPRequestHandler):
             self.trace('nonstream_body_received')
             try:
                 value = json.loads(data)
+                self.api_usage.json(value)
                 valid = usable_message(value)
             except (ValueError, AttributeError, TypeError):
                 valid = False
@@ -450,7 +532,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.trace('first_upstream_bytes')
             self.trace('stream_progress')
             probe.feed(data)
+            self.api_usage.feed(data)
             if probe.usable or probe.error:
+                if probe.error:
+                    self.api_status = 502
                 self.trace('content_available', terminal=probe.terminal, error=probe.error)
                 if not self.response_started:
                     self.start_stream(True)
@@ -464,6 +549,7 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def recovery_error(self, stream):
+        self.api_status = 502
         self.trace('recovery_exhausted', status=502)
         error = {'type': 'error', 'error': {'type': 'api_error',
             'message': 'The model returned no usable answer after 3 attempts. Retry the request; no tool call was delivered.'}}
@@ -471,6 +557,16 @@ class Handler(BaseHTTPRequestHandler):
             self.json_reply(502, error)
         else:
             self.chunk((b'event: error\ndata: ' + json.dumps(error).encode() + b'\n\n') if stream else json.dumps(error).encode())
+            self.wfile.write(b'0\r\n\r\n')
+            self.wfile.flush()
+
+    def provider_configuration_error(self, message, stream=False):
+        error = {'type': 'error', 'error': {'type': 'api_error', 'message': message}}
+        if not self.response_started:
+            self.json_reply(503, error)
+        else:
+            data = json.dumps(error).encode()
+            self.chunk(b'event: error\ndata: ' + data + b'\n\n' if stream else data)
             self.wfile.write(b'0\r\n\r\n')
             self.wfile.flush()
 
@@ -492,26 +588,57 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'0\r\n\r\n')
             return
         if body is not None:
+            if self.api_profile:
+                try:
+                    self.api_usage.json(json.loads(body))
+                except ValueError:
+                    pass
             if body:
                 self.chunk(body)
         else:
+            captured = bytearray()
             while True:
                 data = self.await_upstream(lambda: response.read1(65536), stream)
                 if not data:
                     break
                 self.response_bytes += len(data)
                 self.trace('stream_progress')
+                if self.api_profile:
+                    self.api_usage.feed(data)
+                    if not stream and len(captured) < 1000000:
+                        captured.extend(data)
                 self.chunk(data)
+            if self.api_profile and captured:
+                try:
+                    self.api_usage.json(json.loads(captured))
+                except ValueError:
+                    pass
         self.wfile.write(b'0\r\n\r\n')
         self.wfile.flush()
 
     def forward(self, body):
         conn = None
         try:
-            conn, response = self.open_upstream(body)
+            model = None
+            try:
+                if body:
+                    req = json.loads(body)
+                    model = req.get("model")
+            except Exception:
+                pass
+            if model is not None:
+                self.server.refresh_aliases()
+            if api_keys.is_model(self.server.aliases.get(model, model)):
+                tokens = [self.headers.get('x-api-key', ''), self.headers.get('Authorization', '').removeprefix('Bearer ')]
+                if not any(secrets.compare_digest(token.encode(), key.encode()) for token in tokens for key in self.server.client_keys):
+                    self.json_reply(401, {'error': {'type': 'authentication_error', 'message': 'Invalid API key'}})
+                    return
+            conn, response = self.open_upstream(body, model=model)
             self.trace('forwarded_headers', status=response.status)
             self.deliver(response, None)
             self.trace('finished')
+        except ProviderConfigurationError as error:
+            self.provider_configuration_error(str(error))
         except (OSError, http.client.HTTPException):
             self.close_connection = True
         finally:
@@ -519,6 +646,33 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
 
     do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = do_OPTIONS = handle_request
+
+    def record_api_attempt(self):
+        if self.api_profile is not None:
+            status = self.api_status
+            if self.api_usage.failed and status == 200:
+                status = 502
+            if status == 200 and not self.api_complete:
+                status = 499
+            self.server.api_stats.record(self.api_profile, self.api_model, status, self.api_usage,
+                                         time.monotonic() - self.api_started)
+            self.api_profile = None
+
+    def model_catalog(self):
+        conn = http.client.HTTPConnection(*self.server.upstream, timeout=5)
+        models = []
+        try:
+            conn.request('GET', '/v1/models', headers={'Authorization': 'Bearer ' + self.server.client_keys[0]})
+            response = conn.getresponse()
+            if response.status == 200:
+                models = json.loads(response.read()).get('data', [])
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
+        finally:
+            conn.close()
+        models.extend({'id': entry['id'], 'object': 'model', 'owned_by': 'api', 'display_name': entry['label']}
+                      for entry in api_keys.catalog_rows(self.server.api_profiles()))
+        self.json_reply(200, {'object': 'list', 'data': models})
 
 
 def main():
@@ -531,6 +685,8 @@ def main():
     server.diagnostics = Diagnostics(controller.data_dir / 'gateway-diagnostics.jsonl')
     server.diagnostics.record('service', 'started', phase='ready')
     server.verifications_path = controller.verification_path
+    server.api_profiles = lambda: api_keys.profiles(controller, private=True)
+    server.api_stats = api_keys.Stats(controller.data_dir / 'api-key-stats.json')
     server.serve_forever()
 
 

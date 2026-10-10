@@ -1395,6 +1395,11 @@ _strings = {
 
 # Desktop controls and status messages are translated at the display boundary.
 _strings.update({
+    'tokenharbor_add_key': dict(en='TokenHarbor: add API key', ru='TokenHarbor: добавить API-ключ', uk='TokenHarbor: додати API-ключ', be='TokenHarbor: дадаць API-ключ', zh='TokenHarbor：添加 API 密钥'),
+    'tokenharbor_key_saved': dict(en='TokenHarbor: API key saved', ru='TokenHarbor: API-ключ сохранён', uk='TokenHarbor: API-ключ збережено', be='TokenHarbor: API-ключ захаваны', zh='TokenHarbor：API 密钥已保存'),
+    'tokenharbor_key_tip': dict(en='Store or replace your TokenHarbor key on this computer. The key is encrypted and never included in releases.', ru='Сохранить или заменить ключ TokenHarbor на этом компьютере. Ключ шифруется и не включается в сборки.', uk='Зберегти або замінити ключ TokenHarbor на цьому комп’ютері. Ключ шифрується й не включається у збірки.', be='Захаваць або замяніць ключ TokenHarbor на гэтым камп’ютары. Ключ шыфруецца і не ўключаецца ў зборкі.', zh='在此电脑上保存或替换 TokenHarbor 密钥。密钥会加密，且不会包含在发行版中。'),
+    'tokenharbor_key_prompt': dict(en='Paste your API key. Leave empty to remove the saved key.', ru='Вставьте API-ключ. Пустое поле удалит сохранённый ключ.', uk='Вставте API-ключ. Порожнє поле видалить збережений ключ.', be='Устаўце API-ключ. Пустое поле выдаліць захаваны ключ.', zh='粘贴 API 密钥。留空将删除已保存的密钥。'),
+    'tokenharbor_key_invalid': dict(en='The key must not contain spaces or line breaks.', ru='Ключ не должен содержать пробелы или переносы строк.', uk='Ключ не повинен містити пробіли чи переноси рядків.', be='Ключ не павінен змяшчаць прабелы ці пераносы радкоў.', zh='密钥不能包含空格或换行符。'),
     'mode_count_hint': dict(en='This counts accounts enabled in the pool. Access is checked separately for each model.', ru='Это число включённых аккаунтов в пуле. Доступ проверяется отдельно для каждой модели.', uk='Це кількість увімкнених акаунтів у пулі. Доступ перевіряється окремо для кожної моделі.', be='Гэта колькасць уключаных акаўнтаў у пуле. Доступ правяраецца асобна для кожнай мадэлі.', zh='此数字表示池中已启用的账户数。每个模型的访问权限分别检查。'),
     'chk_autostart': dict(en='Start with Windows', ru='Запускать с Windows', uk='Запускати з Windows', be='Запускаць з Windows', zh='随 Windows 启动'),
     'btn_mini_mode': dict(en='Mini window', ru='Мини-окно', uk='Міні-вікно', be='Міні-акно', zh='迷你窗口'),
@@ -1470,6 +1475,37 @@ def display_reason(reason):
         if code.isdigit():
             return tr('event_denied', code=code)
     return reason
+
+
+_strings.update({
+    'tab_api_keys': dict(en='API keys', ru='API-ключи', uk='API-ключі', be='API-ключы', zh='API 密钥'),
+    'api_note': dict(en='API models are available alongside Google subscription models. Usage counts provider attempts, including retries; tokens come from provider responses. Balance and quota are not reported here.', ru='Модели через ключ доступны вместе с моделями Google-подписки. Статистика считает попытки у провайдера, включая повторы; токены берутся из ответов. Баланс и остаток квоты здесь не определяются.', uk='Моделі через ключ доступні разом із моделями Google-підписки. Статистика рахує спроби у провайдера, включно з повторами; токени беруться з відповідей. Баланс і залишок квоти тут не визначаються.', be='Мадэлі праз ключ даступныя разам з мадэлямі Google-падпіскі. Статыстыка лічыць спробы ў правайдара, уключаючы паўторы; токены бяруцца з адказаў. Баланс і рэшта квоты тут не вызначаюцца.', zh='API 模型与 Google 订阅模型同时可用。统计包含重试，令牌数来自提供商响应；此处不显示余额或剩余配额。'),
+    'api_add': dict(en='Add API key', ru='Добавить API-ключ', uk='Додати API-ключ', be='Дадаць API-ключ', zh='添加 API 密钥'),
+    'api_empty': dict(en='No API keys added yet.', ru='API-ключи ещё не добавлены.', uk='API-ключі ще не додано.', be='API-ключы яшчэ не дададзены.', zh='尚未添加 API 密钥。'),
+    'api_enabled': dict(en='Enabled', ru='Включён', uk='Увімкнено', be='Уключаны', zh='已启用'),
+    'api_disabled': dict(en='Paused', ru='Приостановлен', uk='Призупинено', be='Прыпынены', zh='已暂停'),
+    'api_edit': dict(en='Edit key', ru='Изменить ключ', uk='Змінити ключ', be='Змяніць ключ', zh='编辑密钥'),
+    'api_pause': dict(en='Pause', ru='Приостановить', uk='Призупинити', be='Прыпыніць', zh='暂停'),
+    'api_resume': dict(en='Enable', ru='Включить', uk='Увімкнути', be='Уключыць', zh='启用'),
+    'api_remove': dict(en='Remove key', ru='Удалить ключ', uk='Видалити ключ', be='Выдаліць ключ', zh='删除密钥'),
+    'api_remove_confirm': dict(en='Remove the key “{name}” and its models?', ru='Удалить ключ «{name}» и его модели?', uk='Видалити ключ «{name}» та його моделі?', be='Выдаліць ключ «{name}» і яго мадэлі?', zh='删除密钥“{name}”及其模型？'),
+    'api_stats': dict(en='Responses: {success} • errors: {failed}\nTokens: {input} input / {output} output • average {seconds} s', ru='Ответов: {success} • ошибок: {failed}\nТокены: {input} вход / {output} выход • среднее {seconds} с', uk='Відповідей: {success} • помилок: {failed}\nТокени: {input} вхід / {output} вихід • середнє {seconds} с', be='Адказаў: {success} • памылак: {failed}\nТокены: {input} уваход / {output} выхад • сярэдняе {seconds} с', zh='响应：{success} • 错误：{failed}\n令牌：输入 {input} / 输出 {output} • 平均 {seconds} 秒'),
+    'api_last': dict(en='Last: {model} • HTTP {status} • {time}', ru='Последний: {model} • HTTP {status} • {time}', uk='Останній: {model} • HTTP {status} • {time}', be='Апошні: {model} • HTTP {status} • {time}', zh='最近：{model} • HTTP {status} • {time}'),
+    'api_saved': dict(en='API models updated. Reopen Claude Desktop to refresh its model menu.', ru='API-модели обновлены. Переоткройте Claude Desktop, чтобы обновить меню моделей.', uk='API-моделі оновлено. Перевідкрийте Claude Desktop, щоб оновити меню моделей.', be='API-мадэлі абноўлены. Пераадкрыйце Claude Desktop, каб абнавіць меню мадэляў.', zh='API 模型已更新。重新打开 Claude Desktop 以刷新模型菜单。'),
+    'api_anthropic': dict(en='Anthropic-compatible API', ru='API, совместимый с Anthropic', uk='API, сумісний з Anthropic', be='API, сумяшчальны з Anthropic', zh='Anthropic 兼容 API'),
+    'api_label': dict(en='Name', ru='Название', uk='Назва', be='Назва', zh='名称'),
+    'api_provider': dict(en='Provider', ru='Провайдер', uk='Провайдер', be='Правайдар', zh='提供商'),
+    'api_url': dict(en='API URL', ru='Адрес API', uk='Адреса API', be='Адрас API', zh='API 地址'),
+    'api_key': dict(en='API key', ru='API-ключ', uk='API-ключ', be='API-ключ', zh='API 密钥'),
+    'api_key_keep': dict(en='Leave blank to keep the current key', ru='Пустое поле сохраняет текущий ключ', uk='Порожнє поле зберігає поточний ключ', be='Пустое поле захоўвае бягучы ключ', zh='留空以保留当前密钥'),
+    'api_models': dict(en='Model IDs (one per line)', ru='ID моделей (по одному в строке)', uk='ID моделей (по одному в рядку)', be='ID мадэляў (па адным у радку)', zh='模型 ID（每行一个）'),
+    'api_load_models': dict(en='Load provider models…', ru='Загрузить модели провайдера…', uk='Завантажити моделі провайдера…', be='Загрузіць мадэлі правайдара…', zh='加载提供商模型…'),
+    'api_choose_model': dict(en='Choose a model to add to this key', ru='Выберите модель для этого ключа', uk='Виберіть модель для цього ключа', be='Выберыце мадэль для гэтага ключа', zh='选择要添加到此密钥的模型'),
+    'api_loading': dict(en='Loading models…', ru='Загрузка моделей…', uk='Завантаження моделей…', be='Загрузка мадэляў…', zh='正在加载模型…'),
+    'api_load_error': dict(en='Cannot load models. Check the key and API URL, or enter model IDs manually.', ru='Не удалось загрузить модели. Проверьте ключ и адрес API или впишите ID моделей вручную.', uk='Не вдалося завантажити моделі. Перевірте ключ та адресу API або впишіть ID моделей вручну.', be='Не атрымалася загрузіць мадэлі. Праверце ключ і адрас API або ўпішыце ID мадэляў уручную.', zh='无法加载模型。请检查密钥和 API 地址，或手动填写模型 ID。'),
+    'api_invalid': dict(en='Enter an HTTPS API URL, a key without spaces, and at least one model ID.', ru='Укажите HTTPS-адрес API, ключ без пробелов и хотя бы один ID модели.', uk='Укажіть HTTPS-адресу API, ключ без пробілів та хоча б один ID моделі.', be='Укажыце HTTPS-адрас API, ключ без прабелаў і хаця б адзін ID мадэлі.', zh='请输入 HTTPS API 地址、无空格的密钥和至少一个模型 ID。'),
+    'api_save': dict(en='Save key', ru='Сохранить ключ', uk='Зберегти ключ', be='Захаваць ключ', zh='保存密钥'),
+})
 
 
 def tr(key, **kwargs):

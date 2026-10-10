@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 DEFAULT_ENDPOINT = 'https://logs.conch-labs.com/ingest'
 
-FIELDS = {'method', 'path', 'model', 'requested_model', 'upstream_model', 'stream', 'request_bytes',
+FIELDS = {'method', 'path', 'provider', 'model', 'requested_model', 'upstream_model', 'stream', 'request_bytes',
           'attempt', 'status', 'phase', 'elapsed_seconds', 'wait_seconds', 'retry_at',
           'response_bytes', 'exception_type', 'reason', 'accounts', 'has_text', 'has_tool',
           'has_thinking', 'terminal', 'error', 'pending_seconds', 'account', 'from_account',

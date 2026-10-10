@@ -1,8 +1,16 @@
+# Unreleased — Independent API keys
+
+- Adds a separate API keys tab with encrypted profiles, add/edit/pause/remove controls, and per-key response, error and token statistics.
+- Makes API models available alongside Google subscription models without replacing Google Gemini or Claude selections.
+- Routes TokenHarbor requests through their original Anthropic or OpenAI endpoints and keeps Google account cooldowns separate.
+- Migrates the existing local TokenHarbor key without embedding personal credentials in source code or executables.
+- Includes 141 passing tests and a successful streaming Haiku request through the installed gateway.
+
 # Gemini Accounts 1.3.4 — Gateway retry handling and authenticated log uploads
 
 - Removes the standalone Claude Agent SDK identity line from Anthropic system instructions before forwarding generation and token-count requests. User messages, tools and all other instructions are preserved. Both streaming and nonstreaming paths are covered by protocol tests; the affected remote installation has not yet been retested.
 - Adds **Remove account** in account details, with confirmation. Deletes the saved credential and its local labels / verification state without deleting the Google account or enabling other paused accounts.
-- Removes the exact experimental thought-summary override introduced in 1.3.2�1.3.3; custom payload settings remain intact.
+- Removes the exact experimental thought-summary override introduced in 1.3.2–1.3.3; custom payload settings remain intact.
 - The gateway now keeps HTTP 429 retries local even when account cooldown metadata is missing or no longer matches the rejection. It sends keepalives, respects numeric Retry-After and otherwise uses increasing retry delays instead of exposing 429 to Claude's own retry loop. Authentication / verification failures still surface as errors.
 - Claude token-count requests normalize the extended-context suffix before forwarding. Diagnostics record their route, original model, forwarded model and HTTP status as well as generation requests. This closes a diagnostics gap; it does not prove that the reported “model not found” error has been resolved.
 - Nonstream response body byte counts are recorded correctly.

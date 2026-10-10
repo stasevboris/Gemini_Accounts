@@ -1,5 +1,6 @@
 """Client presets and encrypted, reversible configuration backups."""
 import base64
+import copy
 import json
 import os
 import re
@@ -60,7 +61,7 @@ class Integrations:
         return None
 
     def refresh_desktop_model_labels(self):
-        """Refresh display labels only; preserve model IDs, credentials and defaults."""
+        """Refresh subscription labels and independent API entries in our preset."""
         if not self.legacy_desktop_preset():
             return False
         path = self.paths()['claude_desktop'][2]
@@ -68,6 +69,8 @@ class Integrations:
         aliases = self.controller.model_aliases()
         from model_names import model_name
         changed = False
+        original = copy.deepcopy(preset.get('inferenceModels', []))
+        preset['inferenceModels'] = [entry for entry in preset.get('inferenceModels', []) if not entry['name'].startswith('api/')]
         for entry in preset.get('inferenceModels', []):
             model = aliases.get(entry['name'], entry['name'])
             family = 'Gemini' if model.startswith('gemini-') else 'Claude' if model.startswith('claude-') else ''
@@ -81,11 +84,20 @@ class Integrations:
                 if entry.get(flag, False) != extended_context(model):
                     entry[flag] = extended_context(model)
                     changed = True
+        preset['inferenceModels'].extend(self.api_model_entries())
+        changed = changed or original != preset['inferenceModels']
         if changed:
             with self.lock:
                 self.remember([path])
                 self.write_json(path, preset)
         return changed
+
+    def api_model_entries(self):
+        from api_keys import catalog
+        return [{'name': entry['id'], 'labelOverride': entry['label'],
+                 'anthropicFamilyTier': 'haiku' if 'haiku' in entry['model'] else 'opus' if 'opus' in entry['model'] else 'sonnet',
+                 'isFamilyDefault': False, 'supports1m': False, 'prefer1m': False}
+                for entry in catalog(self.controller)]
 
     def backups(self):
         if not self.backup_path.exists():
@@ -207,7 +219,7 @@ class Integrations:
                      family_models['claude'] if self.controller.preferences.get('claude-model') else 'claude-opus-4-6-thinking'),
                  'prefer1m': extended_context(family_models['gemini'] if tier == 'sonnet' else
                      family_models['claude'] if self.controller.preferences.get('claude-model') else 'claude-opus-4-6-thinking')}
-                for name, label, tier, default in models],
+                for name, label, tier, default in models] + self.api_model_entries(),
         })
         meta = self.read_json(meta_path)
         entries = meta.setdefault('entries', [])

@@ -7,6 +7,7 @@ def model_name(model, aliases=None):
     known = {
         'gemini-pro-agent': '3.1 Pro High',
         'claude-haiku-4-5': 'Haiku 4.5',
+        'claude-haiku-5.5:free': 'Haiku 5.5 (TokenHarbor)',
         'claude-sonnet-4-6': 'Sonnet 4.6',
         'claude-opus-4-6-thinking': 'Opus 4.6 Thinking',
     }

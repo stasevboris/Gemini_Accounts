@@ -3,9 +3,9 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 from tests.qt_support import application, flush, until
-from PySide6.QtCore import QThread, Qt
+from PySide6.QtCore import QThread, Qt, QTimer
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QLabel, QComboBox, QPushButton, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QLabel, QComboBox, QPushButton, QMessageBox, QSystemTrayIcon, QLineEdit
 from app import App
 from backend import Controller, AccountError
 from locales import tr, LANGUAGES, current_language, set_language, display_reason, _strings
@@ -20,7 +20,7 @@ class QuotaUITests(unittest.TestCase):
         root = Path(self.temp.name)
         self.controller = Controller(proxy_dir=root/'proxy', data_dir=root/'data')
         self.patches = [patch('app.Controller', return_value=self.controller)]
-        self.patches += [patch.object(App, name) for name in ('refresh','fetch_quota','start_activity','queue_policy','poll_gateway_jobs','connection_settings','check_vpn')]
+        self.patches += [patch.object(App, name) for name in ('refresh','fetch_quota','start_activity','queue_policy','poll_gateway_jobs','check_for_updates','connection_settings','check_vpn')]
         for p in self.patches:p.start()
         self.window = App()
         self.window.integrations = Integrations(self.controller, home=root/'home', local=root/'local')
@@ -244,6 +244,44 @@ class QuotaUITests(unittest.TestCase):
             self.assertEqual(display_reason('Quota available; nearest 5h reset'),tr('rank_available'))
             self.assertEqual(display_reason('Retry using another account: Google 429: quota exhausted for this model'),
                 tr('event_retry_account',reason=tr('event_exhausted')))
+
+    def test_api_tab_preserves_language_and_hides_key_in_metrics(self):
+        import api_keys
+        api_keys.save_profile(self.controller, {'label': 'TokenHarbor test', 'key': 'private-ui-test-key',
+            'base_url': 'https://tokenharbor.ai', 'models': ['claude-haiku-5.5:free']})
+        w = self.window
+        with patch.object(w, 'poll_api_stats'):
+            w.view_switch.set(tr('tab_api_keys'))
+            w.change_view(tr('tab_api_keys'))
+            for code in ('ru', 'zh', 'en'):
+                w.lang_combo.setCurrentIndex(w.lang_combo.findData(code)); flush()
+                self.assertEqual(w.view_stack.currentIndex(), 2)
+                self.assertEqual(w.view_switch.get(), tr('tab_api_keys'))
+                labels = [label.text() for label in w.api_cards.findChildren(QLabel)]
+                self.assertTrue(any('TokenHarbor test' in text for text in labels))
+                self.assertFalse(any('private-ui-test-key' in text for text in labels))
+            w.lang_combo.setCurrentIndex(w.lang_combo.findData('ru')); flush()
+            w.resize(1120, 850); w.show(); flush()
+            preview = Path('build/tokenharbor-fix/api-tab.png')
+            preview.parent.mkdir(parents=True, exist_ok=True)
+            self.assertTrue(w.grab().save(str(preview)))
+
+    def test_api_key_can_be_added_from_the_dialog(self):
+        import api_keys
+        w = self.window
+        def fill():
+            dialog = self.qapp.activeModalWidget()
+            dialog.findChild(QLineEdit, 'apiLabelInput').setText('Dialog provider')
+            dialog.findChild(QLineEdit, 'apiKeyInput').setText('secret-from-dialog')
+            dialog.findChild(QPushButton, 'apiSaveButton').click()
+        QTimer.singleShot(20, fill)
+        with patch.object(w, 'api_profiles_changed'):
+            w.edit_api_profile()
+        rows = api_keys.profiles(self.controller)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['label'], 'Dialog provider')
+        self.assertNotIn('key', rows[0])
+        self.assertNotIn(b'secret-from-dialog', (self.controller.data_dir/'api-keys.dpapi').read_bytes())
 
     def test_multilingual_previews_and_toolbar_fit(self):
         self.load_accounts();w=self.window

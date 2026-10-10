@@ -23,6 +23,7 @@ from backend import Controller, AccountError
 from activity import Activity
 from routing import rank_accounts, quota_projection
 from integrations import Integrations
+import api_keys
 from model_names import model_name
 from locales import tr, set_language, current_language, LANGUAGES, display_reason
 from themes import ThemeManager, THEMES
@@ -85,6 +86,8 @@ class App(QMainWindow):
         self.activity_state = copy.deepcopy(self.activity.state)
         self.activity_started = False
         self.activity_busy = False
+        self.api_stats = api_keys.Stats(self.controller.data_dir / 'api-key-stats.json').snapshot()
+        self.api_stats_busy = False
         self.gateway_jobs = []
         self.gateway_jobs_checked = 0
         self.activity_rows = {}
@@ -127,7 +130,11 @@ class App(QMainWindow):
         self._gateway_timer = QTimer(self)
         self._gateway_timer.timeout.connect(self.poll_gateway_jobs)
         self._gateway_timer.start(1000)
+        self._api_timer = QTimer(self)
+        self._api_timer.timeout.connect(self.poll_api_stats)
+        self._api_timer.start(5000)
         self._init_desktop_controls()
+        QTimer.singleShot(30000, self.check_for_updates)
         if self.controller.preferences.get('details-collapsed'):
             QTimer.singleShot(180, self.toggle_details)
 
@@ -434,7 +441,7 @@ class App(QMainWindow):
         body_outer.addWidget(self.mode_frame)
 
         # View switcher
-        self.view_switch = SegmentedControl([tr('tab_account_quotas'), tr('tab_routing_stats')])
+        self.view_switch = SegmentedControl([tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys')])
         self.view_switch.value_changed.connect(self.change_view)
         body_outer.addWidget(self.view_switch)
 
@@ -466,6 +473,33 @@ class App(QMainWindow):
         self.stats_scroll.setWidget(self.stats_widget)
         self.view_stack.addWidget(self.stats_scroll)
 
+        self.api_scroll = QScrollArea()
+        self.api_scroll.setWidgetResizable(True)
+        self.api_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.api_widget = QWidget()
+        self.api_layout = QVBoxLayout(self.api_widget)
+        self.api_layout.setContentsMargins(0, 10, 0, 0)
+        self.api_layout.setSpacing(10)
+        heading = QLabel(tr('tab_api_keys'))
+        heading.setFont(QFont('Segoe UI', 22, QFont.Bold))
+        self.api_layout.addWidget(heading)
+        note = QLabel(tr('api_note'))
+        note.setWordWrap(True)
+        note.setProperty('class', 'muted')
+        self.api_layout.addWidget(note)
+        self.api_add_button = QPushButton(tr('api_add'))
+        self.api_add_button.clicked.connect(lambda: self.edit_api_profile())
+        self.api_layout.addWidget(self.api_add_button)
+        self.api_cards = QWidget()
+        self.api_cards_layout = QVBoxLayout(self.api_cards)
+        self.api_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.api_cards_layout.setSpacing(10)
+        self.api_layout.addWidget(self.api_cards)
+        self.api_layout.addStretch()
+        self.api_scroll.setWidget(self.api_widget)
+        self.view_stack.addWidget(self.api_scroll)
+        self.render_api_profiles()
+
         body_outer.addWidget(self.view_stack, 1)
 
         # Bottom notice
@@ -480,6 +514,19 @@ class App(QMainWindow):
         self.stats_title = QLabel(tr('stats_auto_routing'))
         self.stats_title.setFont(QFont('Segoe UI', 22, QFont.Bold))
         self.stats_layout.addWidget(self.stats_title)
+
+        btn_diag_save = QPushButton(tr('btn_save_diag'))
+        btn_diag_save.setToolTip(tr('tip_save_diag'))
+        btn_diag_save.clicked.connect(self.save_diagnostic_log)
+        self.stats_layout.addWidget(btn_diag_save)
+        btn_diag_send = QPushButton(tr('btn_send_diag'))
+        btn_diag_send.setToolTip(tr('tip_send_diag'))
+        btn_diag_send.clicked.connect(self.send_diagnostic_log)
+        self.stats_layout.addWidget(btn_diag_send)
+        self.update_button = QPushButton(tr('btn_check_updates'))
+        self.update_button.setToolTip(tr('tip_check_updates'))
+        self.update_button.clicked.connect(self.check_for_updates)
+        self.stats_layout.addWidget(self.update_button)
 
         self.stats_strategy = QLabel(tr('stats_starting'))
         self.stats_strategy.setFont(QFont('Segoe UI', 13))
@@ -719,7 +766,182 @@ class App(QMainWindow):
     # ── View switching ────────────────────────────────────────────────
 
     def change_view(self, value):
-        self.view_stack.setCurrentIndex(1 if value == tr('tab_routing_stats') else 0)
+        views = [tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys')]
+        self.view_stack.setCurrentIndex(views.index(value))
+        if self.view_stack.currentIndex() == 2:
+            self.render_api_profiles()
+            self.poll_api_stats()
+
+    def render_api_profiles(self):
+        layout = self.api_cards_layout
+        while layout.count():
+            widget = layout.takeAt(0).widget()
+            if widget:
+                widget.hide()
+                widget.deleteLater()
+        rows = api_keys.profiles(self.controller)
+        if not rows:
+            empty = QLabel(tr('api_empty'))
+            empty.setWordWrap(True)
+            layout.addWidget(empty)
+        for row in rows:
+            card = QFrame()
+            card.setObjectName('apiCard')
+            card.setFrameShape(QFrame.StyledPanel)
+            cl = QVBoxLayout(card)
+            title = QLabel(row['label'] + ' · ' + tr('api_enabled' if row.get('enabled', True) else 'api_disabled'))
+            title.setFont(QFont('Segoe UI', 14, QFont.Bold))
+            title.setTextFormat(Qt.PlainText)
+            title.setWordWrap(True)
+            cl.addWidget(title)
+            address = QLabel(row['base_url'])
+            address.setTextFormat(Qt.PlainText)
+            address.setWordWrap(True)
+            address.setProperty('class', 'muted')
+            cl.addWidget(address)
+            models = QLabel('\n'.join('API · ' + model_name(model, {}) for model in row['models']))
+            models.setTextFormat(Qt.PlainText)
+            models.setWordWrap(True)
+            cl.addWidget(models)
+            stats = self.api_stats.get(row['id'], {})
+            count = stats.get('success', 0) + stats.get('failed', 0)
+            text = tr('api_stats', success=stats.get('success', 0), failed=stats.get('failed', 0),
+                      input=f"{stats.get('input_tokens', 0):,}", output=f"{stats.get('output_tokens', 0):,}",
+                      seconds=f"{stats.get('latency_ms', 0) / max(count, 1) / 1000:.1f}")
+            if stats.get('last_at'):
+                text += '\n' + tr('api_last', model=model_name(stats['last_model'], {}),
+                                  status=stats['last_status'], time=self.activity_time(stats['last_at']))
+            metrics = QLabel(text)
+            metrics.setTextFormat(Qt.PlainText)
+            metrics.setWordWrap(True)
+            cl.addWidget(metrics)
+            buttons = QHBoxLayout()
+            for key, callback in (
+                ('api_edit', lambda checked=False, row=row: self.edit_api_profile(row)),
+                ('api_pause' if row.get('enabled', True) else 'api_resume', lambda checked=False, row=row: self.toggle_api_profile(row)),
+                ('api_remove', lambda checked=False, row=row: self.remove_api_profile(row))):
+                button = QPushButton(tr(key))
+                button.clicked.connect(callback)
+                buttons.addWidget(button)
+            cl.addLayout(buttons)
+            layout.addWidget(card)
+
+    def poll_api_stats(self):
+        if self.closed or self.api_stats_busy or self.view_stack.currentIndex() != 2:
+            return
+        self.api_stats_busy = True
+        def done(stats):
+            self.api_stats_busy = False
+            if stats is not None:
+                self.api_stats = stats
+                self.render_api_profiles()
+        self.work(self.controller.api_key_status, done)
+
+    def api_profiles_changed(self):
+        self.render_api_profiles()
+        self.work(self.integrations.refresh_desktop_model_labels,
+                  lambda _: self.show_notice(tr('api_saved')))
+
+    def toggle_api_profile(self, row):
+        api_keys.save_profile(self.controller, dict(row, enabled=not row.get('enabled', True)))
+        self.api_profiles_changed()
+
+    def remove_api_profile(self, row):
+        if QMessageBox.question(self, tr('api_remove'), tr('api_remove_confirm', name=row['label'])) != QMessageBox.Yes:
+            return
+        api_keys.remove_profile(self.controller, row['id'])
+        self.api_profiles_changed()
+
+    def edit_api_profile(self, row=None):
+        row = row or {}
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr('api_edit') if row else tr('api_add'))
+        dialog.setMinimumWidth(520)
+        layout = QVBoxLayout(dialog)
+        fields = QGridLayout()
+        label = QLineEdit(row.get('label', ''))
+        label.setObjectName('apiLabelInput')
+        kind = ThemedComboBox()
+        kind.addItem('TokenHarbor', 'tokenharbor')
+        kind.addItem(tr('api_anthropic'), 'anthropic')
+        kind.setCurrentIndex(max(0, kind.findData(row.get('kind', 'tokenharbor'))))
+        base = QLineEdit(row.get('base_url', 'https://tokenharbor.ai'))
+        key = QLineEdit()
+        key.setObjectName('apiKeyInput')
+        key.setEchoMode(QLineEdit.Password)
+        key.setPlaceholderText(tr('api_key_keep') if row else tr('api_key'))
+        models = QTextEdit('\n'.join(row.get('models', ['claude-haiku-5.5:free'])))
+        models.setObjectName('apiModelsInput')
+        models.setAcceptRichText(False)
+        models.setMaximumHeight(95)
+        def provider_changed():
+            if base.text() in ('https://tokenharbor.ai', 'https://api.anthropic.com'):
+                base.setText('https://api.anthropic.com' if kind.currentData() == 'anthropic' else 'https://tokenharbor.ai')
+            if not row and kind.currentData() == 'anthropic' and models.toPlainText() == 'claude-haiku-5.5:free':
+                models.clear()
+        kind.currentIndexChanged.connect(provider_changed)
+        for index, (caption, widget) in enumerate((('api_label', label), ('api_provider', kind),
+                                                  ('api_url', base), ('api_key', key), ('api_models', models))):
+            fields.addWidget(QLabel(tr(caption)), index, 0)
+            fields.addWidget(widget, index, 1)
+        fields.setColumnStretch(1, 1)
+        layout.addLayout(fields)
+        enabled = QCheckBox(tr('api_enabled'))
+        enabled.setChecked(row.get('enabled', True))
+        layout.addWidget(enabled)
+        load = QPushButton(tr('api_load_models'))
+        layout.addWidget(load)
+        message = QLabel('')
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        closed = [False]
+        dialog.finished.connect(lambda _: closed.__setitem__(0, True))
+        def values():
+            return dict(row, label=label.text(), kind=kind.currentData(), base_url=base.text(),
+                        key=key.text().strip(), models=models.toPlainText().replace(',', '\n').splitlines(), enabled=enabled.isChecked())
+        def fetch():
+            value = values()
+            if not value['key'] and row:
+                value['key'] = next((p['key'] for p in api_keys.profiles(self.controller, private=True) if p['id'] == row['id']), '')
+            # Validate the URL before sending a credential; do not persist edits yet.
+            from urllib.parse import urlsplit
+            url = urlsplit(value['base_url'])
+            if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment or not value['key']:
+                message.setText(tr('api_invalid'))
+                return
+            load.setEnabled(False)
+            message.setText(tr('api_loading'))
+            def operation():
+                try:
+                    return api_keys.fetch_models(value), None
+                except Exception:
+                    return [], tr('api_load_error')
+            def loaded(result):
+                if closed[0]:
+                    return
+                load.setEnabled(True)
+                choices, error = result
+                message.setText(error or '')
+                if choices:
+                    chosen, accepted = QInputDialog.getItem(dialog, tr('api_models'), tr('api_choose_model'), choices, 0, False)
+                    if accepted and chosen not in models.toPlainText().splitlines():
+                        models.append(chosen)
+            self.work(operation, loaded)
+        load.clicked.connect(fetch)
+        save = QPushButton(tr('api_save'))
+        save.setObjectName('apiSaveButton')
+        layout.addWidget(save)
+        def apply():
+            try:
+                api_keys.save_profile(self.controller, values())
+            except AccountError:
+                message.setText(tr('api_invalid'))
+                return
+            dialog.accept()
+            self.api_profiles_changed()
+        save.clicked.connect(apply)
+        self.theme.apply(dialog)
+        dialog.exec()
 
     # ── Data loading ──────────────────────────────────────────────────
 
@@ -1733,6 +1955,100 @@ class App(QMainWindow):
                     self.show_notice(msg, 'green')
             self.work(reconcile, done, mutation=True)
 
+    # ── Updates ───────────────────────────────────────────────────────
+
+    def check_for_updates(self):
+        from updater import check_update
+        self.update_button.setEnabled(False)
+        self.update_button.setText(tr('update_checking'))
+        def done(release):
+            self.available_update = release
+            if release:
+                self.update_button.setText(tr('update_to_version', version=release['version']))
+                self.update_button.clicked.disconnect()
+                self.update_button.clicked.connect(self.install_update)
+            else:
+                self.update_button.setText(tr('update_up_to_date'))
+            self.update_button.setEnabled(True)
+        self.work(check_update, done)
+
+    def install_update(self):
+        if not self.available_update:
+            return
+        from updater import download_update
+        self.update_button.setEnabled(False)
+        self.update_button.setText(tr('update_downloading'))
+        def downloaded(path):
+            self.pending_update = path
+            self.apply_pending_update()
+        self.work(lambda: download_update(self.controller, self.available_update), downloaded)
+
+    def apply_pending_update(self):
+        if self.closed or not self.pending_update:
+            return
+        import json
+        import urllib.request
+        def idle():
+            request = urllib.request.Request('http://127.0.0.1:8317/v0/management/quota-wait',
+                headers={'Authorization': 'Bearer ' + self.controller.key})
+            try:
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return not json.load(response).get('jobs')
+            except OSError:
+                return False
+        def done(is_idle):
+            if is_idle and not self.busy and not self.pending_login:
+                from updater import launch_update
+                launch_update(self.controller, self.pending_update)
+                self.update_button.setText(tr('update_installing'))
+            else:
+                self.update_button.setText(tr('update_waiting'))
+                QTimer.singleShot(5000, self.apply_pending_update)
+        self.work(idle, done)
+
+    # ── Diagnostics ───────────────────────────────────────────────────
+
+    def save_diagnostic_log(self):
+        from gateway_diagnostics import export_diagnostics
+        destination, _ = QFileDialog.getSaveFileName(self, tr('diag_saved'),
+            'GeminiAccounts-diagnostics-' + datetime.now().strftime('%Y%m%d-%H%M%S') + '.zip',
+            'Diagnostic archive (*.zip)')
+        if destination:
+            self.work(lambda: export_diagnostics(self.controller, destination),
+                lambda path: QMessageBox.information(self, tr('diag_saved'), str(path)))
+
+    def send_diagnostic_log(self):
+        from gateway_diagnostics import send_diagnostics, DEFAULT_ENDPOINT, read_upload_token, save_upload_token
+        endpoint = self.controller.preferences.get('diagnostics-endpoint') or DEFAULT_ENDPOINT
+        if not endpoint:
+            endpoint, ok = QInputDialog.getText(self, tr('diag_recipient'), tr('diag_endpoint_prompt'))
+            if not ok or not endpoint:
+                return
+        from urllib.parse import urlparse
+        parsed = urlparse(endpoint)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            QMessageBox.warning(self, tr('diag_recipient'), tr('diag_invalid_url'))
+            return
+        token = read_upload_token(self.controller, endpoint)
+        if not token:
+            token, ok = QInputDialog.getText(self, tr('diag_recipient'),
+                tr('diag_token_prompt', host=parsed.hostname), QLineEdit.Password)
+            if not ok or not token:
+                return
+        reply = QMessageBox.question(self, tr('btn_send_diag'),
+            f'Recipient: {endpoint}\n\n' +
+            'The ZIP contains request phases, models, errors, timings, account cooldowns and active requests. '
+            'Email addresses are replaced with account labels. Prompts, generated text, passwords and authentication tokens are excluded.'
+            '\n\nSend this diagnostic archive now?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        save_upload_token(self.controller, endpoint, token.strip())
+        self.controller.preferences['diagnostics-endpoint'] = endpoint
+        self.controller.save()
+        self.work(lambda: send_diagnostics(self.controller, endpoint),
+            lambda status: QMessageBox.information(self, tr('diag_saved'), tr('diag_sent', status=status)))
+
     # ── Model settings dialog ─────────────────────────────────────────
 
     def model_settings(self):
@@ -2069,6 +2385,7 @@ class App(QMainWindow):
     def _rebuild_stats(self):
         self.stats_title.setText(tr('stats_auto_routing'))
         self.stats_note.setText(tr('stats_accounts_note'))
+        self.update_button.setText(tr('btn_check_updates'))
         if hasattr(self, 'activity_state'):
             self.render_activity()
 

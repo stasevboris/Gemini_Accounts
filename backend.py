@@ -181,6 +181,15 @@ class Controller:
         except (OSError, ValueError):
             return {'jobs': []}
 
+    def api_key_status(self):
+        request = urllib.request.Request('http://127.0.0.1:8317/v0/management/api-key-stats',
+            headers={'Authorization': 'Bearer ' + (self.key or '')})
+        try:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=3) as response:
+                return json.load(response)
+        except (OSError, ValueError):
+            return None
+
     def request(self, path, method='GET', payload=None):
         data = None if payload is None else json.dumps(payload).encode()
         request = urllib.request.Request(self.base + '/v0/management' + path, data=data, method=method,
@@ -334,6 +343,8 @@ class Controller:
         for account in self.accounts():
             if not account.get('access_issue'):
                 available.update(self.models(account))
+        from api_keys import is_model
+        available = {model for model in available if not is_model(model)}
         choices = {
             'gemini': sorted(m for m in available if m.startswith('gemini-') and m != 'gemini-selected' and 'image' not in m),
             'claude': sorted(m for m in available if m.startswith(('claude-sonnet-', 'claude-opus-', 'claude-haiku-')) and m != 'claude-sonnet-4-5'),
@@ -348,7 +359,12 @@ class Controller:
     def selected_family_models(self):
         aliases = self.model_aliases()
         gemini = self.preferences.get('gemini-model') or aliases.get('claude-sonnet-4-5', '')
-        claude = self.preferences.get('claude-model') or aliases.get('claude-selected', '')
+        claude = aliases.get('claude-selected') or self.preferences.get('claude-model', '')
+        from api_keys import is_model
+        if is_model(claude):
+            claude = self.preferences.get('claude-model', '')
+        if is_model(claude):
+            claude = 'claude-opus-4-6-thinking'
         return {'gemini': gemini if gemini.startswith('gemini-') else 'gemini-3.1-pro-low',
                 'claude': claude if claude.startswith('claude-') else 'claude-sonnet-4-6'}
 
@@ -383,6 +399,8 @@ class Controller:
             if account.get('access_issue'):
                 continue
             available.update(self.models(account))
+        from api_keys import is_model
+        available = {model for model in available if not is_model(model)}
         return {
             'pro': sorted({m for m in available if m.startswith(('gemini-', 'claude-', 'gpt-')) and m not in aliases and 'image' not in m} |
                           {aliases.get('claude-sonnet-4-5', 'gemini-3.1-pro-low')}),

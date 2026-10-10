@@ -13,6 +13,7 @@ Google Antigravity account manager with Gemini / Claude quota monitoring and a l
 **Gemini Accounts** is a local account manager and routing gateway that multiplexes multiple Google Antigravity accounts. It provides a unified local API endpoint that AI clients (like Claude Code and Codex) can connect to without needing to manage multiple API keys manually.
 
 #### Key Features
+- **Independent API Keys:** Add, edit, pause and remove TokenHarbor or Anthropic-compatible API profiles in a separate tab. Each key has its own request and token statistics; its models are available alongside Google Gemini and Claude. [Setup guide](docs/TOKENHARBOR_RU.md).
 - **Automatic Account Rotation & Failover:** Monitors quota limits across multiple Google accounts and automatically routes requests to accounts with available quota.
 - **Quota Monitoring:** Tracks Google's 5-hour and 1-week quota buckets for Gemini and Claude models, complete with visual progress bars and countdowns.
 - **Seamless Integration:** Automatically configures supported third-party AI clients (Claude Desktop, Claude Code CLI, Codex) to point to its local gateway.
@@ -95,6 +96,7 @@ python -m unittest discover -s tests
 **Gemini Accounts** — это локальный менеджер аккаунтов и шлюз маршрутизации, который объединяет несколько аккаунтов Google Antigravity. Он предоставляет единый локальный API, к которому могут подключаться ИИ-клиенты (такие как Claude Code и Codex), избавляя от необходимости вручную управлять множеством API-ключей.
 
 #### Основные возможности
+- **Отдельные API-ключи:** Добавление, изменение, приостановка и удаление ключей TokenHarbor и совместимых с Anthropic API. У каждого ключа своя статистика; его модели доступны рядом с Google Gemini и Claude. [Инструкция](docs/TOKENHARBOR_RU.md).
 - **Автоматическая ротация и переключение:** Отслеживает лимиты квот для нескольких аккаунтов Google и автоматически направляет запросы на аккаунты с доступной квотой.
 - **Мониторинг квот:** Отслеживает 5-часовые и недельные квоты для моделей Gemini и Claude, отображая визуальные прогресс-бары и обратный отсчет.
 - **Бесшовная интеграция:** Автоматически настраивает поддерживаемые ИИ-клиенты (Claude Desktop, Claude Code CLI, Codex) для работы с локальным шлюзом.
@@ -104,8 +106,9 @@ python -m unittest discover -s tests
 #### Поддерживаемые модели
 - **Семейство Gemini:** `gemini-3.1-pro-low`, `gemini-3.1-pro-high`, `gemini-3-flash`, `gemini-3-flash-lite`, `gemini-pro-agent`
 - **Семейство Claude (через Antigravity):** `claude-sonnet-4-5`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `claude-haiku-4-5`
+- **Семейство Claude (через Token Harbor):** `claude-haiku-5.5:free`
 
-*Примечание: Вы можете использовать подписку Gemini Pro от Jio всего за ~1$!*
+*Примечание: Вы можете использовать подписку Gemini Pro от Jio всего за ~1$! Или бесплатно пользоваться Claude Haiku 5.5 через Token Harbor.*
 
 ### 📦 Установка (Windows Desktop)
 

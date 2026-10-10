@@ -86,6 +86,16 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertNotIn('gemini-3.1-flash-image', self.controller.model_choices()['flash'])
 
+    def test_external_model_does_not_replace_google_claude_selection(self):
+        from tokenharbor import MODEL
+        self.controller.preferences['claude-model'] = 'claude-opus-4-6-thinking'
+        self.entries.append({'alias': 'claude-selected', 'name': MODEL})
+        self.config.write_text(yaml.safe_dump({'oauth': {'model-alias': {'antigravity': self.entries}}}), encoding='utf-8')
+        self.assertNotIn(MODEL, self.controller.family_model_choices()['claude'])
+        self.assertEqual(self.controller.selected_family_models()['claude'], 'claude-opus-4-6-thinking')
+        with self.assertRaises(AccountError):
+            self.controller.set_family_models('gemini-pro-agent', MODEL)
+
     def test_every_text_model_can_be_chosen_for_either_slot(self):
         choices = self.controller.model_choices()
         for group in ('pro', 'flash'):
