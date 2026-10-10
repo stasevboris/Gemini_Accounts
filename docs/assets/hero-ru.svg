@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="240" viewBox="0 0 1200 240" role="img" aria-label="Gemini Accounts — один локальный шлюз для ваших моделей">
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#17233c"/><stop offset="1" stop-color="#10141d"/></linearGradient>
+    <linearGradient id="line"><stop stop-color="#739aff"/><stop offset=".55" stop-color="#66d7b0"/><stop offset="1" stop-color="#ffbd93"/></linearGradient>
+  </defs>
+  <rect width="1200" height="240" rx="24" fill="url(#bg)"/>
+  <path d="M0 228H1200" stroke="url(#line)" stroke-width="3"/>
+  <circle cx="1110" cy="45" r="120" fill="#739aff" opacity=".055"/>
+  <circle cx="910" cy="235" r="150" fill="#66d7b0" opacity=".045"/>
+  <path d="M65 59l9 21 21 9-21 9-9 21-9-21-21-9 21-9z" fill="#a5bdff"/>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <text x="111" y="91" font-size="47" font-weight="700" fill="#edf2fa">Gemini Accounts</text>
+    <text x="49" y="137" font-size="21" fill="#b4c5df">Один локальный шлюз. Все ваши модели.</text>
+    <text x="49" y="182" font-size="14" letter-spacing="1" fill="#869dbc">GOOGLE-АККАУНТЫ  ·  API-КЛЮЧИ  ·  МОНИТОРИНГ КВОТ</text>
+    <g font-size="15" font-weight="600" text-anchor="middle">
+      <rect x="745" y="44" width="160" height="41" rx="13" fill="#739aff" opacity=".14"/>
+      <text x="825" y="70" fill="#a5bdff">Gemini</text>
+      <rect x="745" y="99" width="160" height="41" rx="13" fill="#ffbd93" opacity=".13"/>
+      <text x="825" y="125" fill="#ffcca9">Claude</text>
+      <rect x="745" y="154" width="160" height="41" rx="13" fill="#66d7b0" opacity=".13"/>
+      <text x="825" y="180" fill="#8be7c4">API-модели</text>
+      <path d="M920 65h25v55h28M920 120h53M920 175h25v-55" fill="none" stroke="#5a7194" stroke-width="2"/>
+      <rect x="982" y="89" width="165" height="62" rx="16" fill="#739aff" opacity=".12" stroke="#739aff"/>
+      <text x="1064" y="115" fill="#edf2fa">localhost</text>
+      <text x="1064" y="136" font-size="12" font-weight="400" fill="#a5bdff">127.0.0.1:8317</text>
+    </g>
+  </g>
+</svg>

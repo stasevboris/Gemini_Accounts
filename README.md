@@ -1,167 +1,205 @@
-# Gemini Accounts
+<p align="center">
+  <img src="docs/assets/hero-en.svg" alt="Gemini Accounts — one local gateway for your models" width="1200">
+</p>
 
-[🇬🇧 English](#english) | [🇷🇺 Русский](#русский)
+<p align="center">
+  <strong>English</strong> · <a href="README_RU.md">Русский</a>
+</p>
 
----
+<p align="center">
+  Google accounts, subscription quotas and independent API keys.<br>
+  A Windows desktop app and a CLI for Windows, macOS and Linux.
+</p>
 
-<a id="english"></a>
-## 🇬🇧 English
+<p align="center">
+  <a href="https://github.com/stasevboris/Gemini_Accounts/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/stasevboris/Gemini_Accounts?style=flat-square&amp;color=739aff"></a>
+  <a href="https://github.com/stasevboris/Gemini_Accounts/actions/workflows/build.yml"><img alt="Build and tests" src="https://github.com/stasevboris/Gemini_Accounts/actions/workflows/build.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-66d7b0?style=flat-square"></a>
+  <img alt="Windows desktop; Windows, macOS and Linux CLI" src="https://img.shields.io/badge/desktop-Windows-739aff?style=flat-square">
+  <img alt="CLI for Windows, macOS and Linux" src="https://img.shields.io/badge/CLI-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-ffbd93?style=flat-square">
+</p>
 
-Google Antigravity account manager with Gemini / Claude quota monitoring and a local gateway for Claude Code and Codex. Available as a **Windows desktop app** and a **terminal app for Windows, macOS and Linux**.
+<p align="center">
+  <a href="https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-Setup.exe"><strong>⬇ Download for Windows</strong></a>
+  &nbsp;·&nbsp; <a href="#quick-start">Quick start</a>
+  &nbsp;·&nbsp; <a href="#screenshots">Screenshots</a>
+  &nbsp;·&nbsp; <a href="#terminal">Terminal</a>
+  &nbsp;·&nbsp; <a href="#faq">FAQ</a>
+</p>
 
-### 🚀 What is this?
-**Gemini Accounts** is a local account manager and routing gateway that multiplexes multiple Google Antigravity accounts. It provides a unified local API endpoint that AI clients (like Claude Code and Codex) can connect to without needing to manage multiple API keys manually.
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/en-dashboard-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/en-dashboard-dark.png">
+  <img src="docs/screenshots/en-dashboard-dark.png" alt="Account dashboard with independent Gemini and Claude quotas, reset times and automatic routing" width="1280">
+</picture>
 
-#### Key Features
-- **Independent API Keys:** Add, edit, pause and remove TokenHarbor or Anthropic-compatible API profiles in a separate tab. Each key has its own request and token statistics; its models are available alongside Google Gemini and Claude. [Setup guide](docs/TOKENHARBOR_RU.md).
-- **Automatic Account Rotation & Failover:** Monitors quota limits across multiple Google accounts and automatically routes requests to accounts with available quota.
-- **Quota Monitoring:** Tracks Google's 5-hour and 1-week quota buckets for Gemini and Claude models, complete with visual progress bars and countdowns.
-- **Seamless Integration:** Automatically configures supported third-party AI clients (Claude Desktop, Claude Code CLI, Codex) to point to its local gateway.
-- **Local Proxy & Queueing:** Holds requests in a local queue if quota is temporarily exhausted, preventing request failures and keeping upstream clients alive via streaming keep-alives.
-- **Privacy First:** All sensitive local data (backups, management keys, verification states) is encrypted using DPAPI on Windows and Fernet on macOS/Linux.
+<p align="center"><sub>Actual application UI with demonstration data. Account addresses are masked; no real keys or sign-ins are shown.</sub></p>
 
-#### Supported Models
-- **Gemini Family:** `gemini-3.1-pro-low`, `gemini-3.1-pro-high`, `gemini-3-flash`, `gemini-3-flash-lite`, `gemini-pro-agent`
-- **Claude Family (via Antigravity):** `claude-sonnet-4-5`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `claude-haiku-4-5`
+## What you get
 
-*Note: You can use Gemini Pro through Jio for as little as $1!*
+| | Feature | In practice |
+| :--: | --- | --- |
+| ✦ | **Independent model sources** | Google Gemini, Google Claude and API-key models appear alongside each other. Selecting Haiku through a key does not replace Google Opus. |
+| ↻ | **Automatic routing** | Uses enabled Google accounts, ranks available quota by reset time and handles provider retries. You can also choose one account manually. |
+| ▰ | **Quota dashboard** | Separate 5-hour and weekly values, reset countdowns, pooled totals and a compact window. Missing quota data stays marked as unknown. |
+| ⌁ | **API key profiles** | Add, edit, pause or remove keys; choose model IDs and view response, error, token and latency statistics for each key. |
+| ⚡ | **Client setup** | Connect Claude Desktop, Claude Code CLI and Codex. Original client configurations are backed up and can be restored. |
+| ◐ | **An interface that fits** | Light/dark themes, a system tray and five UI languages: English, Russian, Ukrainian, Belarusian and Chinese. |
 
-### 📦 Installation (Windows Desktop)
+<a id="quick-start"></a>
+## Up and running
 
-<img src="docs/compact-panel.png" alt="Compact panel with verification controls, model names, independent Gemini and Claude selections, and pooled quotas" width="320">
+1. **Install.** Download [GeminiAccounts-Setup.exe](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-Setup.exe) and run it. Python and administrator access are not required.
+2. **Add an account or key.** Use **Add Google account** for browser sign-in, or open **API keys → Add API key** for a provider key.
+3. **Connect your clients.** Open **Connect applications**, select the clients and review their configuration changes.
+4. **Choose a model and work.** Pick Gemini, Claude or a separate API model in your client. Keep the manager running to monitor routing and quotas.
 
-1. [**Download GeminiAccounts-Setup.exe**](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-Setup.exe) and click **Install**. No Python or administrator access required.
-2. Click **Add Google account** and complete browser sign-in.
-3. Open **Connect applications** and approve setup of installed clients. Original configs are backed up.
+When updating, finish active requests first. The installer preserves existing Google sign-ins. Reopen Claude Desktop after changing API models so its model menu refreshes.
 
-*A desktop shortcut is created. Updates preserve accounts and configurations.*
+<a id="screenshots"></a>
+## A closer look
 
-### 💻 Terminal: Windows, macOS and Linux
+<table>
+  <tr>
+    <td width="50%"><strong>API keys, with their own statistics</strong><br><br><a href="docs/screenshots/en-api-keys.png"><img src="docs/screenshots/en-api-keys.png" alt="Independent API-key tab" width="620"></a></td>
+    <td width="50%"><strong>Requests and account switches</strong><br><br><a href="docs/screenshots/en-request-log.png"><img src="docs/screenshots/en-request-log.png" alt="Request journal and account routing statistics" width="620"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Gemini and Claude selected independently</strong><br><br><a href="docs/screenshots/en-models.png"><img src="docs/screenshots/en-models.png" alt="Independent Google subscription model selections" width="600"></a></td>
+    <td><strong>Client setup and restoration</strong><br><br><a href="docs/screenshots/en-connections.png"><img src="docs/screenshots/en-connections.png" alt="Configuration dialog for Claude Desktop, Codex and Claude Code" width="600"></a></td>
+  </tr>
+</table>
 
-Download the matching CLI archive from [Releases](https://github.com/stasevboris/Gemini_Accounts/releases/latest), extract it and open a terminal in that folder.
+<details>
+<summary><strong>More views: light theme, compact window, key editor and routing priorities</strong></summary>
 
-| Platform | Archive | Start Command |
-| --- | --- | --- |
-| Windows x64 | `GeminiAccounts-CLI-windows-x64.zip` | `.\GeminiAccounts-CLI.exe` |
-| Mac with Apple Silicon | `GeminiAccounts-CLI-macos-arm64.tar.gz` | `./gemini-accounts` |
-| Mac with Intel | `GeminiAccounts-CLI-macos-x64.tar.gz` | `./gemini-accounts` |
-| Linux x64 | `GeminiAccounts-CLI-linux-x64.tar.gz` | `./gemini-accounts` |
+### Light theme
 
-Use the interactive menu for sign-in, quotas, verification, client setup, and restoration. **Ctrl+C / Exit** stops services started by that terminal.
+![Light theme dashboard](docs/screenshots/en-dashboard-light.png)
 
-### 🛠 Tech Stack
-- **Language:** Python 3.12+
-- **GUI Framework:** PySide6 (Qt for Python)
-- **Core Libraries:** `bcrypt`, `cryptography` (Fernet), `PyYAML`, `ctypes` (DPAPI)
-- **Native Proxy Service:** External Go binary (`CLIProxyAPI`) running on `127.0.0.1:8318`
-- **Local Gateway:** `ThreadingHTTPServer` running on `127.0.0.1:8317`
+<table>
+  <tr>
+    <td width="36%" valign="top"><strong>Compact window</strong><br><br><img src="docs/screenshots/en-compact.png" alt="Compact account monitor" width="320"></td>
+    <td valign="top"><strong>API key editor</strong><br><br><img src="docs/screenshots/en-key-editor.png" alt="API key editor with a masked key and separate model IDs" width="520"></td>
+  </tr>
+</table>
 
-### ⚙️ Connections and Restoration
+![Routing priorities and last successful model](docs/screenshots/en-routing.png)
 
-| Client | Changes after approval |
+</details>
+
+<a id="api-keys"></a>
+## Google subscriptions + API keys
+
+The model settings dialog selects the two **Google subscription families**. The **API keys** tab manages additional providers separately.
+
+For example, your Claude Desktop menu can contain:
+
+```text
+Gemini · 3.1 Pro High                 ← Google account
+Claude · Opus 4.6 Thinking            ← Google account
+API · TokenHarbor · Haiku 5.5         ← API key
+API · Another profile · Gemini       ← another API profile
+```
+
+Each key has a separate model identifier. Two keys to the same model remain separate profiles. Google cooldowns do not block API-key requests; API providers still apply their own access and rate limits.
+
+The Windows key editor supports **TokenHarbor** and **Anthropic-compatible HTTPS APIs**. Load the provider's catalog or enter model IDs, one per line. TokenHarbor supports the Anthropic and OpenAI request routes used by the gateway; a provider exposing only OpenAI endpoints needs an Anthropic adapter to work with Claude Desktop.
+
+Key statistics show observed usage, including retry attempts and provider-reported tokens. They do not estimate your provider balance or remaining quota. [Detailed API-key guide →](docs/API_KEYS.md)
+
+## Supported clients
+
+| Client | What is configured |
 | --- | --- |
-| **Claude Desktop (Windows)** | Local gateway preset for the Code tab. Ordinary web chats retain their own connection. |
-| **Claude Code CLI (All)** | Gateway URL, local key, model defaults merged into `~/.claude/settings.json`. |
-| **Codex (Windows / CLI)** | Responses API provider and local model catalog injected into `~/.codex/config.toml`. |
+| **Claude Desktop · Windows** | A local gateway preset for the Code tab, including independent API models. Ordinary web chats use their existing connection. |
+| **Claude Code CLI** | Gateway URL, local authentication and model defaults in Claude settings. |
+| **Codex Desktop / CLI** | A local Responses API provider and model catalog. |
 
-**Restore:** desktop **☰ → Connect applications → Restore previous settings / reset preferences**, or terminal `./gemini-accounts restore`. Google sign-ins are kept.
+Client setup asks before changing configuration files. **Connect applications → Restore previous settings** restores the saved originals and keeps Google sign-ins.
 
-### 🛡️ Privacy & Storage
-- Gateway (`127.0.0.1:8317`) and native service (`127.0.0.1:8318`) are local-only.
-- Each installation receives random keys. **Releases contain no personal sign-ins, private keys, or history.**
-- Windows uses DPAPI to protect management keys and backups.
-- Mac / Linux encrypt these files with Fernet and a user-only local storage key.
+<a id="terminal"></a>
+## Prefer a terminal?
 
-### 🔨 Development
-Requirements: Python 3.12+
-```sh
-python -m pip install -r requirements-cli.txt
-python console.py --help
+The standalone CLI handles Google sign-in, quotas, verification, model selection, client setup and service monitoring. The graphical API-key editor is part of the Windows desktop app.
+
+| Platform | Download | Run after extraction |
+| --- | --- | --- |
+| Windows x64 | [CLI ZIP](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-CLI-windows-x64.zip) | `.\GeminiAccounts-CLI.exe` |
+| macOS · Apple Silicon | [ARM64 archive](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-CLI-macos-arm64.tar.gz) | `./gemini-accounts` |
+| macOS · Intel | [x64 archive](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-CLI-macos-x64.tar.gz) | `./gemini-accounts` |
+| Linux x64 | [x64 archive](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-CLI-linux-x64.tar.gz) | `./gemini-accounts` |
+
+```bash
+./gemini-accounts login
+./gemini-accounts status
+./gemini-accounts configure --clients claude_cli codex
+./gemini-accounts serve
+```
+
+The first CLI launch downloads the pinned native service and checks its checksum. Keep `serve` or the interactive menu open for monitoring. **Ctrl+C** stops the services started by that invocation. [Full terminal guide →](CLI.md)
+
+## Local storage, clear boundaries
+
+- The client connects to `127.0.0.1:8317`; the native Google gateway listens on `127.0.0.1:8318`. Generation still happens at the selected provider.
+- API keys, management secrets and client-configuration backups use **Windows DPAPI** or **Fernet on macOS/Linux**. Google OAuth files remain in the local native credential store.
+- Runtime credentials are separate from the source checkout. Release files contain no personal keys, Google sign-ins or conversation history.
+- Diagnostics keep request metadata rather than prompts. Account names and full backup archives can still be sensitive; keep personal exports private.
+
+<a id="faq"></a>
+## Questions that come up
+
+<details>
+<summary><strong>Why does an account show quota but still fail?</strong></summary>
+
+Quota data describes a model group and can be incomplete or cached. It does not prove that a particular model currently accepts requests. Model-specific restrictions, verification and provider-side limits may still apply. Check the model and the latest request event.
+
+</details>
+
+<details>
+<summary><strong>Why do I see “rate limit” or a connection-test warning?</strong></summary>
+
+Check the latest gateway event and the response status. Provider limits, denied access and empty test responses are different failures. The manager can retry eligible requests, but it cannot grant missing model access or increase a provider's quota.
+
+</details>
+
+<details>
+<summary><strong>Do I need to add the same key again after an update?</strong></summary>
+
+Existing local key profiles and Google sign-ins are preserved. The previous single TokenHarbor key is read as an initial profile and migrated when a profile is saved. Reopen Claude Desktop to refresh its model menu.
+
+</details>
+
+<details>
+<summary><strong>Will removing an account delete my Google account?</strong></summary>
+
+It removes the saved local sign-in and its local metadata. It does not delete the Google account. Account removal asks for confirmation.
+
+</details>
+
+<details>
+<summary><strong>Can I return clients to their previous settings?</strong></summary>
+
+Yes. Use **Connect applications → Restore previous settings** or `./gemini-accounts restore`. Restore uses the originals saved before the first managed change, so later manual client-config edits may be replaced.
+
+</details>
+
+## Build and contribute
+
+Python **3.12+**. For the Windows desktop app:
+
+```powershell
+python -m pip install -r requirements.txt
+python app.py
 python -m unittest discover -s tests
 ```
 
-*This is an independent project, not an official Google, Anthropic or OpenAI application.*
+For terminal-only development, install `requirements-cli.txt` and run `python console.py`. Windows release packaging uses `native-patches/build.ps1` followed by `build-release.ps1`; [GitHub Actions](.github/workflows/build.yml) builds and smoke-tests the release platforms.
+
+Found a problem? [Open an issue](https://github.com/stasevboris/Gemini_Accounts/issues) with the version, selected model and error status. Remove personal data from logs and screenshots first.
 
 ---
 
-<br>
-<br>
+Based on [GeminiAccounts](https://github.com/nikitaeight24family/GeminiAccounts) by nikitaeight24family, with [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) as the native gateway. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY.md).
 
-<a id="русский"></a>
-## 🇷🇺 Русский
-
-Менеджер аккаунтов Google Antigravity с мониторингом квот Gemini / Claude и локальным шлюзом для Claude Code и Codex. Доступен в виде **Windows desktop приложения** и **терминального приложения для Windows, macOS и Linux**.
-
-### 🚀 Что это такое?
-**Gemini Accounts** — это локальный менеджер аккаунтов и шлюз маршрутизации, который объединяет несколько аккаунтов Google Antigravity. Он предоставляет единый локальный API, к которому могут подключаться ИИ-клиенты (такие как Claude Code и Codex), избавляя от необходимости вручную управлять множеством API-ключей.
-
-#### Основные возможности
-- **Отдельные API-ключи:** Добавление, изменение, приостановка и удаление ключей TokenHarbor и совместимых с Anthropic API. У каждого ключа своя статистика; его модели доступны рядом с Google Gemini и Claude. [Инструкция](docs/TOKENHARBOR_RU.md).
-- **Автоматическая ротация и переключение:** Отслеживает лимиты квот для нескольких аккаунтов Google и автоматически направляет запросы на аккаунты с доступной квотой.
-- **Мониторинг квот:** Отслеживает 5-часовые и недельные квоты для моделей Gemini и Claude, отображая визуальные прогресс-бары и обратный отсчет.
-- **Бесшовная интеграция:** Автоматически настраивает поддерживаемые ИИ-клиенты (Claude Desktop, Claude Code CLI, Codex) для работы с локальным шлюзом.
-- **Локальный прокси и очереди:** Удерживает запросы в локальной очереди при временном исчерпании квот, предотвращая сбои запросов и поддерживая соединение с клиентами с помощью keep-alive пакетов.
-- **Конфиденциальность:** Все конфиденциальные локальные данные (резервные копии, ключи управления, статусы верификации) надежно шифруются с использованием DPAPI в Windows и Fernet в macOS/Linux.
-
-#### Поддерживаемые модели
-- **Семейство Gemini:** `gemini-3.1-pro-low`, `gemini-3.1-pro-high`, `gemini-3-flash`, `gemini-3-flash-lite`, `gemini-pro-agent`
-- **Семейство Claude (через Antigravity):** `claude-sonnet-4-5`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `claude-haiku-4-5`
-- **Семейство Claude (через Token Harbor):** `claude-haiku-5.5:free`
-
-*Примечание: Вы можете использовать подписку Gemini Pro от Jio всего за ~1$! Или бесплатно пользоваться Claude Haiku 5.5 через Token Harbor.*
-
-### 📦 Установка (Windows Desktop)
-
-<img src="docs/compact-panel.png" alt="Панель аккаунтов и квот" width="320">
-
-1. [**Скачайте GeminiAccounts-Setup.exe**](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-Setup.exe) и нажмите **Install**. Python или права администратора не требуются.
-2. Нажмите **Add Google account** и выполните вход в браузере.
-3. Откройте **Connect applications** и подтвердите настройку установленных клиентов. Оригинальные конфиги будут сохранены.
-
-*Ярлык будет создан на рабочем столе. При обновлении аккаунты и настройки сохраняются.*
-
-### 💻 Терминал: Windows, macOS и Linux
-
-Скачайте подходящий архив из [Releases](https://github.com/stasevboris/Gemini_Accounts/releases/latest), распакуйте его и откройте терминал в этой папке.
-
-| Платформа | Архив | Команда запуска |
-| --- | --- | --- |
-| Windows x64 | `GeminiAccounts-CLI-windows-x64.zip` | `.\GeminiAccounts-CLI.exe` |
-| Mac (Apple Silicon) | `GeminiAccounts-CLI-macos-arm64.tar.gz` | `./gemini-accounts` |
-| Mac (Intel) | `GeminiAccounts-CLI-macos-x64.tar.gz` | `./gemini-accounts` |
-| Linux x64 | `GeminiAccounts-CLI-linux-x64.tar.gz` | `./gemini-accounts` |
-
-Используйте интерактивное меню для входа, проверки квот, верификации и настройки клиентов. Нажатие **Ctrl+C** или **Exit** останавливает сервисы.
-
-### 🛠 Стек технологий
-- **Язык:** Python 3.12+
-- **GUI Фреймворк:** PySide6 (Qt for Python)
-- **Библиотеки:** `bcrypt`, `cryptography` (Fernet), `PyYAML`, `ctypes` (DPAPI)
-- **Нативный прокси:** Внешний Go-бинарник (`CLIProxyAPI`), работающий на `127.0.0.1:8318`
-- **Локальный шлюз:** `ThreadingHTTPServer`, работающий на `127.0.0.1:8317`
-
-### ⚙️ Подключения и восстановление
-
-| Клиент | Изменения после подтверждения |
-| --- | --- |
-| **Claude Desktop (Windows)** | Локальный пресет шлюза для вкладки Code. Обычные веб-чаты сохраняют свое собственное подключение. |
-| **Claude Code CLI (Все)** | URL шлюза, локальный ключ и дефолтные модели интегрируются в `~/.claude/settings.json`. |
-| **Codex (Windows / CLI)** | Настраивается провайдер API и локальный каталог моделей в `~/.codex/config.toml`. |
-
-**Восстановление:** в десктоп-версии **☰ → Connect applications → Restore previous settings / reset preferences**, или в терминале `./gemini-accounts restore`. Входы в Google сохраняются.
-
-### 🛡️ Конфиденциальность и хранение
-- Шлюз (`127.0.0.1:8317`) и нативный сервис (`127.0.0.1:8318`) работают исключительно локально.
-- Каждая установка генерирует случайные ключи. **Релизы не содержат личных входов, закрытых ключей или истории.**
-- Windows использует DPAPI для защиты ключей управления и бэкапов.
-- Mac / Linux шифруют файлы с помощью Fernet и локального ключа хранилища пользователя.
-
-### 🔨 Разработка
-Требования: Python 3.12+
-```sh
-python -m pip install -r requirements-cli.txt
-python console.py --help
-python -m unittest discover -s tests
-```
-
-*Это независимый проект, не являющийся официальным приложением Google, Anthropic или OpenAI.*
+<p align="center"><sub>Independent software. Not an official Google, Anthropic or OpenAI product.</sub></p>
