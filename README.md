@@ -29,7 +29,7 @@ Google Antigravity account manager with Gemini / Claude quota monitoring and a l
 
 <img src="docs/compact-panel.png" alt="Compact panel with verification controls, model names, independent Gemini and Claude selections, and pooled quotas" width="320">
 
-1. [**Download GeminiAccounts-Setup.exe**](https://github.com/nikitaeight24family/GeminiAccounts/releases/latest/download/GeminiAccounts-Setup.exe) and click **Install**. No Python or administrator access required.
+1. [**Download GeminiAccounts-Setup.exe**](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-Setup.exe) and click **Install**. No Python or administrator access required.
 2. Click **Add Google account** and complete browser sign-in.
 3. Open **Connect applications** and approve setup of installed clients. Original configs are backed up.
 
@@ -37,7 +37,7 @@ Google Antigravity account manager with Gemini / Claude quota monitoring and a l
 
 ### 💻 Terminal: Windows, macOS and Linux
 
-Download the matching CLI archive from [Releases](https://github.com/nikitaeight24family/GeminiAccounts/releases/latest), extract it and open a terminal in that folder.
+Download the matching CLI archive from [Releases](https://github.com/stasevboris/Gemini_Accounts/releases/latest), extract it and open a terminal in that folder.
 
 | Platform | Archive | Start Command |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ python -m unittest discover -s tests
 
 <img src="docs/compact-panel.png" alt="Панель аккаунтов и квот" width="320">
 
-1. [**Скачайте GeminiAccounts-Setup.exe**](https://github.com/nikitaeight24family/GeminiAccounts/releases/latest/download/GeminiAccounts-Setup.exe) и нажмите **Install**. Python или права администратора не требуются.
+1. [**Скачайте GeminiAccounts-Setup.exe**](https://github.com/stasevboris/Gemini_Accounts/releases/latest/download/GeminiAccounts-Setup.exe) и нажмите **Install**. Python или права администратора не требуются.
 2. Нажмите **Add Google account** и выполните вход в браузере.
 3. Откройте **Connect applications** и подтвердите настройку установленных клиентов. Оригинальные конфиги будут сохранены.
 
@@ -116,7 +116,7 @@ python -m unittest discover -s tests
 
 ### 💻 Терминал: Windows, macOS и Linux
 
-Скачайте подходящий архив из [Releases](https://github.com/nikitaeight24family/GeminiAccounts/releases/latest), распакуйте его и откройте терминал в этой папке.
+Скачайте подходящий архив из [Releases](https://github.com/stasevboris/Gemini_Accounts/releases/latest), распакуйте его и откройте терминал в этой папке.
 
 | Платформа | Архив | Команда запуска |
 | --- | --- | --- |

@@ -11,4 +11,4 @@
 
 Google model availability and account restrictions remain outside the gateway's control. Waiting is cancellable; no assistant answers or tool calls are fabricated. This release does not claim to fix the underlying Google restriction or the unconfirmed model routing issue.
 
-Windows: run `GeminiAccounts-Setup.exe` after current requests finish. Existing Google sign-ins and configuration backups are preserved. Terminal archives cover Windows x64, macOS Apple Silicon / Intel and Linux x64. See the [quick start](https://github.com/nikitaeight24family/GeminiAccounts#readme) and [terminal guide](https://github.com/nikitaeight24family/GeminiAccounts/blob/main/CLI.md).
+Windows: run `GeminiAccounts-Setup.exe` after current requests finish. Existing Google sign-ins and configuration backups are preserved. Terminal archives cover Windows x64, macOS Apple Silicon / Intel and Linux x64. See the [quick start](https://github.com/stasevboris/Gemini_Accounts#readme) and [terminal guide](https://github.com/stasevboris/Gemini_Accounts/blob/main/CLI.md).
