@@ -22,6 +22,8 @@ class Mock(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
         value = {'files': self.server.files}
+        if self.path == '/v1/models':
+            value = {'data': [{'id': model} for model in getattr(self.server, 'catalog', [])]}
         if self.path == '/v0/management/oauth-model-alias' and hasattr(self.server, 'model_aliases'):
             value = {'oauth-model-alias': {'antigravity': self.server.model_aliases}}
         data = json.dumps(value).encode()
@@ -35,6 +37,18 @@ class Mock(BaseHTTPRequestHandler):
                 b'event: message_stop\ndata: {"type":"message_stop"}\n\n') if self.server.status == 200 else b'{"error":{"type":"authentication_error","message":"Denied"}}'
         if getattr(self.server, 'json_nonstream', False) and not self.server.last_request.get('stream'):
             data = b'{"type":"message","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn"}'
+        if (any(t.get('type', '').startswith('web_search_') for t in self.server.last_request.get('tools', []))
+                and self.server.last_request.get('model') not in getattr(self.server, 'search_without_results', set())):
+            use = {'type': 'server_tool_use', 'id': 'search1', 'name': 'web_search', 'input': {'query': 'Docs'}}
+            result = {'type': 'web_search_tool_result', 'tool_use_id': 'search1',
+                      'content': [{'type': 'web_search_result', 'url': 'https://docs.python.org/', 'title': 'Docs'}]}
+            if self.server.last_request.get('stream'):
+                data = (b'event: message_start\ndata: {"type":"message_start","message":{"id":"search"}}\n\n'
+                        + b'data: ' + json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': use}).encode() + b'\n\n'
+                        + b'data: ' + json.dumps({'type': 'content_block_start', 'index': 1, 'content_block': result}).encode() + b'\n\n'
+                        + b'data: {"type":"message_stop"}\n\n')
+            else:
+                data = json.dumps({'type': 'message', 'content': [use, result], 'stop_reason': 'end_turn'}).encode()
         if self.path == '/v1/responses' and self.server.status == 200:
             data = b'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
         if self.server.calls <= getattr(self.server, 'empty_attempts', 0):
@@ -50,6 +64,31 @@ class Mock(BaseHTTPRequestHandler):
 
 
 class QueueTests(unittest.TestCase):
+    def test_grok_quota_wait_is_scoped_to_xai_accounts(self):
+        google = account('grok-4', seconds=200)
+        google['cooldowns'][0]['scope'] = 'credential'
+        xai = {'provider': 'xai', 'name': 'grok', 'status': 'active'}
+        self.assertIsNone(quota_wait([google, xai], 'grok-4', {}))
+        limited = {**account('grok-4', seconds=200), 'provider': 'xai'}
+        self.assertIsNotNone(quota_wait([{'provider': 'antigravity', 'name': 'google'}, limited], 'grok-4', {}))
+
+    def test_grok_request_keeps_history_and_tools_despite_google_quota(self):
+        google = account('grok-4', seconds=200)
+        google['cooldowns'][0]['scope'] = 'credential'
+        self.backend.files = [google, {'provider': 'xai', 'name': 'grok', 'status': 'active'}]
+        payload = {'model': 'grok-4', 'stream': True, 'max_tokens': 32,
+                   'messages': [{'role': 'user', 'content': 'Remember blue'},
+                                {'role': 'assistant', 'content': 'OK'},
+                                {'role': 'user', 'content': 'Which color?'}],
+                   'tools': [{'name': 'calculator', 'input_schema': {'type': 'object'}}]}
+        self.client.request('POST', '/v1/messages', json.dumps(payload), {'Authorization': 'Bearer client'})
+        response = self.client.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertIn(b'OK', response.read())
+        self.assertEqual(self.backend.last_request['model'], 'grok-4')
+        self.assertEqual(self.backend.last_request['messages'], payload['messages'])
+        self.assertEqual(self.backend.last_request['tools'], payload['tools'])
+
     def setUp(self):
         self.backend = ThreadingHTTPServer(('127.0.0.1', 0), Mock)
         self.backend.files = [account()]; self.backend.calls = 0; self.backend.status = 200
@@ -63,6 +102,84 @@ class QueueTests(unittest.TestCase):
     def post(self, key='client', model='alias'):
         self.client.request('POST', '/v1/messages', json.dumps({'model': model, 'stream': True, 'messages': []}), {'x-api-key': key})
         return self.client.getresponse()
+
+    def search_payload(self, model):
+        return {'model': model, 'stream': False, 'max_tokens': 1024,
+                'system': [{'type': 'text', 'text': 'You are an assistant for performing a web search tool use'}],
+                'messages': [{'role': 'user', 'content': 'Perform a web search for the query: Python documentation'}],
+                'tools': [{'type': 'web_search_20250305', 'name': 'web_search',
+                           'allowed_domains': ['docs.python.org'], 'max_uses': 3}],
+                'tool_choice': {'type': 'tool', 'name': 'web_search'}}
+
+    def submit_payload(self, payload, path='/v1/messages'):
+        self.client.request('POST', path, json.dumps(payload), {'x-api-key': 'client'})
+        response = self.client.getresponse()
+        result = response.status, response.read()
+        self.client.close()
+        self.client = http.client.HTTPConnection(*self.gate.server_address, timeout=3)
+        return result
+
+    def test_desktop_search_helper_preserves_search_contract_across_google_claude_and_api(self):
+        self.backend.files = []
+        self.backend.json_nonstream = True
+        self.backend.catalog = ['gemini-3.1-flash-lite', 'gpt-6-luna']
+        for model in ['claude-opus-4-6-thinking', 'api/test/deepseek', 'gemini-unlisted']:
+            with self.subTest(model=model):
+                payload = self.search_payload(model)
+                status, _ = self.submit_payload(payload)
+                self.assertEqual(status, 200)
+                self.assertEqual(self.backend.last_request, {**payload, 'model': 'gpt-6-luna'})
+        events = self.gate.diagnostics.snapshot()['events']
+        self.assertEqual(sum(e['event'] == 'desktop_search_routed' for e in events), 3)
+
+    def test_native_search_and_ordinary_conversations_do_not_change_models(self):
+        self.backend.files = []
+        self.backend.json_nonstream = True
+        for model in ['gemini-3.1-flash-lite', 'gpt-6-luna']:
+            with self.subTest(model=model):
+                payload = self.search_payload(model)
+                self.assertEqual(self.submit_payload(payload)[0], 200)
+                self.assertEqual(self.backend.last_request, payload)
+        for modification in [{'system': 'Normal conversation', 'messages': [{'role': 'user', 'content': 'Read this page'}]},
+                             {'tools': []}, {'tool_choice': {'type': 'none'}}]:
+            payload = {**self.search_payload('claude-opus-4-6-thinking'), **modification}
+            self.assertEqual(self.submit_payload(payload)[0], 200)
+            self.assertEqual(self.backend.last_request, payload)
+        payload = self.search_payload('claude-opus-4-6-thinking')
+        payload['tools'].append({'name': 'Read', 'input_schema': {'type': 'object'}})
+        self.assertEqual(self.submit_payload(payload)[0], 200)
+        self.assertEqual(self.backend.last_request, payload)
+
+    def test_search_helper_uses_chatgpt_without_google_and_reports_missing_account(self):
+        self.backend.files = []
+        self.backend.json_nonstream = True
+        self.backend.catalog = ['gpt-6-luna']
+        payload = self.search_payload('claude-opus-4-6-thinking')
+        self.assertEqual(self.submit_payload(payload)[0], 200)
+        self.assertEqual(self.backend.last_request['model'], 'gpt-6-luna')
+        self.backend.catalog = []
+        previous_calls = self.backend.calls
+        status, body = self.submit_payload(payload)
+        self.assertEqual(status, 503)
+        self.assertIn(b'Web search needs an available Google or ChatGPT account', body)
+        self.assertEqual(self.backend.calls, previous_calls)
+        self.assertEqual(self.gate.snapshot()['jobs'], [])
+
+    def test_search_fallback_hides_plain_answer_and_returns_native_results_in_both_modes(self):
+        self.backend.files = []
+        self.backend.json_nonstream = True
+        self.backend.catalog = ['gemini-3.1-flash-lite', 'gpt-6-luna']
+        self.backend.search_without_results = {'gemini-3.1-flash-lite'}
+        for stream in [False, True]:
+            payload = self.search_payload('gemini-3.1-flash-lite')
+            payload['stream'] = stream
+            before = self.backend.calls
+            status, body = self.submit_payload(payload)
+            self.assertEqual(status, 200)
+            self.assertIn(b'web_search_tool_result', body)
+            self.assertNotIn(b'"text":"OK"', body)
+            self.assertEqual(self.backend.last_request['model'], 'gpt-6-luna')
+            self.assertEqual(self.backend.calls - before, 2)
     def test_sdk_identity_removed_for_stream_nonstream_and_token_count(self):
         from quota_queue import SDK_IDENTITY
         self.backend.files = []

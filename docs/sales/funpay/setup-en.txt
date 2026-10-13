@@ -1,0 +1,50 @@
+BUILD + SETUP PACKAGE — 990 RUB
+
+SHORT DESCRIPTION
+🛠 Gemini Accounts | Build + guide + installation and setup assistance
+
+DETAILED DESCRIPTION
+🛠 GEMINI ACCOUNTS FOR WINDOWS — WITH SETUP ASSISTANCE
+
+Everything in the Build + Guide package, plus individual help with the initial connection of one selected client: Claude Desktop, Claude Code or Codex.
+
+📦 Included:
+• Ready-to-install Windows x64 build.
+• Step-by-step English and Russian guides.
+• Help installing the application.
+• Help adding your Google accounts or API profiles.
+• Connection setup for one selected client.
+• A test request to your chosen model, provided the provider allows access.
+• Help diagnosing initial connection errors through FunPay chat.
+
+⚙️ Application features:
+• Automatic selection of enabled Google accounts based on quotas.
+• Separate Gemini and Google-provided Claude quota monitoring.
+• Multiple API keys and models.
+• Request, error, token and response-time statistics.
+• Light/dark themes and English/Russian interface.
+
+📋 Setup process:
+1. Before paying, tell me which client and model source you want to use.
+2. We agree on compatibility and a suitable setup time.
+3. You receive the installer and guide after payment.
+4. You sign in and enter keys yourself; I help with configuration.
+5. We check the connection and selected model.
+
+🔑 You need your own accounts with model access or your own API keys. Accounts, subscriptions and API credit are not included. The application does not remove provider access restrictions, quotas or outages.
+
+Support in this package covers the initial setup of the agreed connection. Ongoing support and custom development are not included.
+
+The software is open source. Payment covers delivery of the prepared build and guide plus setup assistance. Do not send passwords or API keys in chat. Screenshots contain demonstration data.
+
+MESSAGE TO THE BUYER AFTER PAYMENT
+Thank you for purchasing the Build + Setup package! Please tell me: 1) the client to connect — Claude Desktop, Claude Code or Codex; 2) the model source — Google accounts or an API key; 3) a convenient setup time. I will send the package and we will agree on the steps. Do not send passwords or secret keys in chat.
+
+IMAGES
+1. en-dashboard.png — application overview.
+2. en-connections.png — client setup.
+3. en-models.png — model selection.
+4. en-api-keys.png — API profiles.
+
+DELIVERY
+Manual. This package requires communication and an additional service, so automatic delivery should stay disabled.

@@ -1,5 +1,6 @@
 import ctypes
 import copy
+import hashlib
 import math
 import colorsys
 import time
@@ -13,7 +14,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QGraphicsOpacityEffect,
     QHBoxLayout, QLabel, QPushButton, QScrollArea, QFrame, QSplitter,
     QStackedWidget, QLineEdit, QComboBox, QCheckBox, QTextEdit, QDialog,
-    QMessageBox, QFileDialog, QInputDialog, QSizePolicy, QToolTip, QProgressBar, QGridLayout, QLayout, QSystemTrayIcon, QMenu, QDoubleSpinBox)
+    QMessageBox, QFileDialog, QInputDialog, QSizePolicy, QToolTip, QProgressBar, QGridLayout, QLayout, QSystemTrayIcon, QMenu,
+    QDoubleSpinBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
 from PySide6.QtCore import (Qt, Signal, QObject, QRunnable, QThreadPool, QTimer,
     QSize, QRectF, QPointF, QMargins, QPropertyAnimation, QEasingCurve)
 from PySide6.QtGui import (QIcon, QFont, QFontMetrics, QColor, QPainter, QPen,
@@ -21,9 +23,18 @@ from PySide6.QtGui import (QIcon, QFont, QFontMetrics, QColor, QPainter, QPen,
 from PySide6.QtNetwork import QNetworkInterface
 from backend import Controller, AccountError
 from activity import Activity
+from account_uptime import AccountUptime
+from alert_tracker import AlertTracker, account_alert_conditions
+from token_capacity import TokenCapacity
+from grok_ui import GrokAccountsPanel
 from routing import rank_accounts, quota_projection, quota_entry, weekly_threshold, weekly_depleted
 from integrations import Integrations
 import api_keys
+from chatgpt_ui import ChatGPTPanelMixin
+from claude_ui import ClaudeAccountsPanel
+from policy_ui import PolicyControlsMixin
+from quota_limits import account_priority, quota_floor, blocked_families, clear_quota_limits, quota_policy_lock, oauth_quota_groups
+from account_status import account_status, google_account_status, safe_detail
 from model_names import model_name
 from locales import tr, set_language, current_language, LANGUAGES, display_reason
 from themes import ThemeManager, THEMES
@@ -61,7 +72,7 @@ class Worker(QRunnable):
 
 # ── Main application window ──────────────────────────────────────────
 
-class App(QMainWindow):
+class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.controller = Controller()
@@ -82,12 +93,22 @@ class App(QMainWindow):
         self._workers = set()
         self.pending_login = None
         self.login_url = None
+        self.login_callback_uri = None
+        self.login_callback_input = None
+        self.account_uptime = AccountUptime(self.controller.data_dir / 'account-uptime.json')
+        self.alert_tracker = AlertTracker()
+        self.token_capacity = TokenCapacity(self.controller.data_dir / 'token-capacity.json')
+        self.capacity_usage_ready = False
         self.activity = Activity(self.controller.data_dir / 'activity.json')
         self.activity_state = copy.deepcopy(self.activity.state)
         self.activity_started = False
         self.activity_busy = False
         self.api_stats = api_keys.Stats(self.controller.data_dir / 'api-key-stats.json').snapshot()
         self.api_stats_busy = False
+        self.chatgpt_accounts = []
+        self.chatgpt_busy = False
+        self.chatgpt_checked = 0
+        self.chatgpt_login_dialog = None
         self.gateway_jobs = []
         self.gateway_jobs_checked = 0
         self.activity_rows = {}
@@ -132,6 +153,9 @@ class App(QMainWindow):
         self._gateway_timer.start(1000)
         self._api_timer = QTimer(self)
         self._api_timer.timeout.connect(self.poll_api_stats)
+        self._api_timer.timeout.connect(self.refresh_chatgpt_accounts)
+        self._api_timer.timeout.connect(self.claude_accounts_panel.refresh)
+        self._api_timer.timeout.connect(self.grok_accounts_panel.refresh)
         self._api_timer.start(5000)
         self._init_desktop_controls()
         QTimer.singleShot(30000, self.check_for_updates)
@@ -164,6 +188,7 @@ class App(QMainWindow):
         main_layout.addWidget(self.sidebar)
         self._build_body()
         main_layout.addWidget(self.body_container, 1)
+        self.build_provider_controls()
 
     def _init_desktop_controls(self):
         icon = Path(getattr(sys, '_MEIPASS', Path(__file__).parent)) / 'app.ico'
@@ -302,6 +327,7 @@ class App(QMainWindow):
 
         # Total quota (weekly)
         weekly_frame = QWidget()
+        self.total_weekly_frame = weekly_frame
         wq_layout = QVBoxLayout(weekly_frame)
         wq_layout.setContentsMargins(18, 0, 18, 6)
         wq_layout.setSpacing(1)
@@ -324,7 +350,6 @@ class App(QMainWindow):
         self.weekly_forecast_widget.setVisible(False)
         wq_layout.addWidget(self.weekly_forecast_widget)
         layout.addWidget(weekly_frame)
-        layout.addStretch() # Push everything up
         
         # Bottom controls (Mini Mode & Autostart)
         bottom_controls = QWidget()
@@ -441,7 +466,7 @@ class App(QMainWindow):
         body_outer.addWidget(self.mode_frame)
 
         # View switcher
-        self.view_switch = SegmentedControl([tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys')])
+        self.view_switch = SegmentedControl([tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys'), tr('tab_chatgpt'), tr('tab_claude_accounts'), tr('tab_grok_accounts')])
         self.view_switch.value_changed.connect(self.change_view)
         body_outer.addWidget(self.view_switch)
 
@@ -499,6 +524,17 @@ class App(QMainWindow):
         self.api_scroll.setWidget(self.api_widget)
         self.view_stack.addWidget(self.api_scroll)
         self.render_api_profiles()
+        self.build_chatgpt_panel()
+        if not hasattr(self, 'claude_accounts_panel'):
+            self.claude_accounts_panel = ClaudeAccountsPanel(self)
+        else:
+            self.claude_accounts_panel.render()
+        self.view_stack.addWidget(self.claude_accounts_panel)
+        if not hasattr(self, 'grok_accounts_panel'):
+            self.grok_accounts_panel = GrokAccountsPanel(self)
+        else:
+            self.grok_accounts_panel.render()
+        self.view_stack.addWidget(self.grok_accounts_panel)
 
         body_outer.addWidget(self.view_stack, 1)
 
@@ -569,6 +605,72 @@ class App(QMainWindow):
         self.stats_totals.setWordWrap(True)
         self.stats_layout.addWidget(self.stats_totals)
 
+        self.capacity_heading = QLabel(tr('capacity_heading'))
+        self.capacity_heading.setFont(QFont('Segoe UI', 16, QFont.Bold))
+        self.stats_layout.addWidget(self.capacity_heading)
+        self.capacity_note = QLabel(tr('capacity_note'))
+        self.capacity_note.setProperty('class', 'muted')
+        self.capacity_note.setWordWrap(True)
+        self.stats_layout.addWidget(self.capacity_note)
+        capacity_controls = QHBoxLayout()
+        capacity_controls.addWidget(QLabel(tr('capacity_share')))
+        self.capacity_share = QDoubleSpinBox()
+        self.capacity_share.setRange(1, 100)
+        self.capacity_share.setDecimals(1)
+        self.capacity_share.setSuffix(' %')
+        self.capacity_share.setKeyboardTracking(False)
+        self.capacity_share.setValue(float(self.controller.preferences.get('token-capacity-share', 20)))
+        self.capacity_share.valueChanged.connect(lambda _: self.render_token_capacity())
+        self.capacity_share.editingFinished.connect(self.save_capacity_share)
+        capacity_controls.addWidget(self.capacity_share)
+        capacity_controls.addStretch()
+        self.stats_layout.addLayout(capacity_controls)
+        self.capacity_empty = QLabel(tr('capacity_collecting'))
+        self.capacity_empty.setProperty('class', 'muted')
+        self.capacity_empty.setWordWrap(True)
+        self.stats_layout.addWidget(self.capacity_empty)
+        self.capacity_table = QTableWidget(0, 6)
+        self.capacity_table.setHorizontalHeaderLabels([tr('capacity_provider'), tr('capacity_plan'),
+            tr('capacity_model'), tr('capacity_window'), tr('capacity_estimate'), tr('capacity_samples')])
+        self.capacity_table.verticalHeader().setVisible(False)
+        self.capacity_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.capacity_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.capacity_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.capacity_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.capacity_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        for column in (3, 4, 5):
+            self.capacity_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.capacity_table.setMinimumHeight(72)
+        self.capacity_table.setMaximumHeight(240)
+        self.capacity_table.setVisible(False)
+        self.stats_layout.addWidget(self.capacity_table)
+
+        self.forecast_heading = QLabel(tr('quota_eta_heading'))
+        self.forecast_heading.setFont(QFont('Segoe UI', 16, QFont.Bold))
+        self.stats_layout.addWidget(self.forecast_heading)
+        self.forecast_note = QLabel(tr('quota_eta_note'))
+        self.forecast_note.setProperty('class', 'muted')
+        self.forecast_note.setWordWrap(True)
+        self.stats_layout.addWidget(self.forecast_note)
+        self.forecast_empty = QLabel(tr('quota_eta_collecting'))
+        self.forecast_empty.setProperty('class', 'muted')
+        self.forecast_empty.setWordWrap(True)
+        self.stats_layout.addWidget(self.forecast_empty)
+        self.forecast_table = QTableWidget(0, 7)
+        self.forecast_table.setHorizontalHeaderLabels([tr('capacity_provider'), tr('quota_eta_account'),
+            tr('capacity_model'), tr('capacity_window'), tr('quota_eta_to_reserve'),
+            tr('quota_eta_reset'), tr('quota_eta_outlook')])
+        self.forecast_table.verticalHeader().setVisible(False)
+        self.forecast_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.forecast_table.setSelectionMode(QAbstractItemView.NoSelection)
+        for column in (0, 1, 3, 4, 5, 6):
+            self.forecast_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.forecast_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.forecast_table.setMinimumHeight(72)
+        self.forecast_table.setMaximumHeight(260)
+        self.forecast_table.setVisible(False)
+        self.stats_layout.addWidget(self.forecast_table)
+
         self.stats_accounts_widget = QWidget()
         self.stats_accounts_layout = QVBoxLayout(self.stats_accounts_widget)
         self.stats_accounts_layout.setContentsMargins(0, 0, 0, 0)
@@ -604,6 +706,7 @@ class App(QMainWindow):
             self.busy = True
             self.add_button.setEnabled(False)
             self.pool_button.setEnabled(False)
+            self.set_policy_controls_enabled(False)
         worker = Worker(fn)
         self._workers.add(worker)
         def on_finished(result, error):
@@ -614,6 +717,7 @@ class App(QMainWindow):
                 self.busy = False
                 self.add_button.setEnabled(not self.pending_login)
                 self.pool_button.setEnabled(True)
+                self.set_policy_controls_enabled(True)
             if error:
                 msg = str(error) if isinstance(error, AccountError) else tr('action_generic_error')
                 self.show_notice(msg, 'warning')
@@ -637,6 +741,9 @@ class App(QMainWindow):
         label.style().polish(label)
 
     def display_name(self, account):
+        if self.controller.preferences.get('hide-account-names'):
+            ident = hashlib.sha256(account['name'].encode()).hexdigest()[:6]
+            return tr('private_account', id=ident)
         return (self.controller.preferences.get('labels', {}).get(account['name'])
                 or account.get('email') or tr('google_account'))
 
@@ -766,20 +873,37 @@ class App(QMainWindow):
     # ── View switching ────────────────────────────────────────────────
 
     def change_view(self, value):
-        views = [tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys')]
+        views = [tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys'), tr('tab_chatgpt'),
+                 tr('tab_claude_accounts'), tr('tab_grok_accounts')]
         self.view_stack.setCurrentIndex(views.index(value))
         if self.view_stack.currentIndex() == 2:
             self.render_api_profiles()
             self.poll_api_stats()
+        elif self.view_stack.currentIndex() == 3:
+            self.render_chatgpt_accounts()
+            self.refresh_chatgpt_accounts()
+        elif self.view_stack.currentIndex() == 4:
+            self.claude_accounts_panel.render()
+            self.claude_accounts_panel.refresh()
+        elif self.view_stack.currentIndex() == 5:
+            self.grok_accounts_panel.render()
+            self.grok_accounts_panel.refresh()
 
     def render_api_profiles(self):
+        rows = api_keys.profiles(self.controller)
+        signature = (repr(rows), current_language(), self.theme.current)
+        if signature == getattr(self, '_api_drawn', None):
+            for row in rows:
+                self._api_metrics[row['id']].setText(self.api_metrics_text(row))
+            return
+        self._api_drawn = signature
+        self._api_metrics = {}
         layout = self.api_cards_layout
         while layout.count():
             widget = layout.takeAt(0).widget()
             if widget:
                 widget.hide()
                 widget.deleteLater()
-        rows = api_keys.profiles(self.controller)
         if not rows:
             empty = QLabel(tr('api_empty'))
             empty.setWordWrap(True)
@@ -812,6 +936,7 @@ class App(QMainWindow):
                 text += '\n' + tr('api_last', model=model_name(stats['last_model'], {}),
                                   status=stats['last_status'], time=self.activity_time(stats['last_at']))
             metrics = QLabel(text)
+            self._api_metrics[row['id']] = metrics
             metrics.setTextFormat(Qt.PlainText)
             metrics.setWordWrap(True)
             cl.addWidget(metrics)
@@ -825,6 +950,17 @@ class App(QMainWindow):
                 buttons.addWidget(button)
             cl.addLayout(buttons)
             layout.addWidget(card)
+
+    def api_metrics_text(self, row):
+        stats = self.api_stats.get(row['id'], {})
+        count = stats.get('success', 0) + stats.get('failed', 0)
+        text = tr('api_stats', success=stats.get('success', 0), failed=stats.get('failed', 0),
+                  input=f"{stats.get('input_tokens', 0):,}", output=f"{stats.get('output_tokens', 0):,}",
+                  seconds=f"{stats.get('latency_ms', 0) / max(count, 1) / 1000:.1f}")
+        if stats.get('last_at'):
+            text += '\n' + tr('api_last', model=model_name(stats['last_model'], {}),
+                              status=stats['last_status'], time=self.activity_time(stats['last_at']))
+        return text
 
     def poll_api_stats(self):
         if self.closed or self.api_stats_busy or self.view_stack.currentIndex() != 2:
@@ -890,6 +1026,11 @@ class App(QMainWindow):
         enabled = QCheckBox(tr('api_enabled'))
         enabled.setChecked(row.get('enabled', True))
         layout.addWidget(enabled)
+        rotate = QCheckBox(tr('api_rotate'))
+        rotate.setObjectName('apiRotateInput')
+        rotate.setChecked(row.get('rotate', True))
+        rotate.setToolTip(tr('api_rotate_hint'))
+        layout.addWidget(rotate)
         load = QPushButton(tr('api_load_models'))
         layout.addWidget(load)
         check = QPushButton(tr('api_check'))
@@ -909,7 +1050,7 @@ class App(QMainWindow):
         dialog.finished.connect(lambda _: closed.__setitem__(0, True))
         def values():
             return dict(row, label=label.text(), kind=kind.currentData(), base_url=base.text(),
-                        key=key.text().strip(), models=models.toPlainText().replace(',', '\n').splitlines(), enabled=enabled.isChecked())
+                        key=key.text().strip(), models=models.toPlainText().replace(',', '\n').splitlines(), enabled=enabled.isChecked(), rotate=rotate.isChecked())
         def fetch():
             value = values()
             if not value['key'] and row:
@@ -1011,6 +1152,8 @@ class App(QMainWindow):
             self.controller.save()
             QTimer.singleShot(500, self.connection_settings)
         self.items = items
+        self.account_uptime.update_many('antigravity', items)
+        self.check_account_alerts()
         self.service.setText(tr('status_connected'))
         self.set_label_color(self.service, 'green')
         if self.selected not in {a['name'] for a in items}:
@@ -1032,6 +1175,7 @@ class App(QMainWindow):
             self.update_detail_account()
         for account in items:
             self.fetch_quota(account['name'])
+        self.grok_accounts_panel.refresh()
         self.queue_policy()
         if not self.activity_started:
             self.activity_started = True
@@ -1046,6 +1190,17 @@ class App(QMainWindow):
         pending_count = sum(1 for a in accounts if a.get('access_issue') == 'verification')
         depleted_count = sum(a.get('access_issue') != 'verification' and self.account_weekly_depleted(a['name']) for a in accounts)
         ready_count = len(accounts) - pending_count - depleted_count
+        signature = (current_language(), self.theme.current, tuple(
+            (a['name'], a.get('access_issue'), self.account_connection_issue(a),
+             self.account_weekly_depleted(a['name']), tuple((g['kind'], b['window'])
+             for g in self.quota_groups(a['name']) for b in self.visible_quota_buckets(g))) for a in sorted(accounts, key=lambda a: a['name'])))
+        if signature == getattr(self, '_account_structure', None) and len(self.account_widgets) == len(accounts):
+            positions = sorted(self.account_list_layout.indexOf(card) for card in self.account_widgets.values())
+            for position, account in zip(positions, accounts):
+                self.account_list_layout.insertWidget(position, self.account_widgets[account['name']])
+                self.refresh_account_card(account)
+            return
+        self._account_structure = signature
 
         # Clear existing widgets
         while self.account_list_layout.count() > 1:
@@ -1080,7 +1235,11 @@ class App(QMainWindow):
 
             name = account['name']
             card = AccountCard(name)
+            self.configure_priority_control(card.priority_control, name, 'google')
             card.set_heading(self.account_heading(account))
+            plan = self.quota_cache.get(name, {}).get('data', {}).get('subscription')
+            if plan:
+                card.set_heading(self.account_heading(account) + ' · ' + plan)
             selected = not self.details_collapsed and name == self.selected
             card.set_selected(selected, t)
             card.clicked.connect(self.select_account)
@@ -1088,7 +1247,7 @@ class App(QMainWindow):
             card.remove_requested.connect(self.remove_account)
             card.setToolTip(self.account_tooltip(account))
             cached_quota = self.quota_is_cached(account)
-            if account.get('access_issue') or self.account_connection_issue(account):
+            if account.get('access_issue') or self.account_connection_issue(account) or blocked_families(self.controller.preferences, name, self.quota_groups(name)):
                 status = self.account_status_text(account)
                 if cached_quota:
                     status += '\n' + tr('account_cached_quota')
@@ -1096,6 +1255,9 @@ class App(QMainWindow):
                 status = tr('account_cached_quota') if cached_quota else ''
             card.status_label.setText(status)
             card.status_label.setVisible(bool(status))
+            uptime_text = self.uptime_text('antigravity', name)
+            card.uptime_label.setText(uptime_text)
+            card.uptime_label.setVisible(bool(uptime_text))
 
             # Quota rows in card
             groups = self.quota_groups(name)
@@ -1104,6 +1266,7 @@ class App(QMainWindow):
                     remaining = bucket.get('remaining')
                     text = self.sidebar_quota_text(group, bucket)
                     qrow = QuotaRowWidget(group['kind'], bucket['window'])
+                    self.bind_reserve_bar(qrow.bar, name, 'google', group['kind'], bucket['window'])
                     countdown_text = self.time_until_reset(
                         bucket.get('reset'), days_only=bucket['window'] == 'weekly')
                     bounds = {'5h': (0, 5 * 3600), 'weekly': (0, 7 * 86400)}
@@ -1144,6 +1307,33 @@ class App(QMainWindow):
             self.account_widgets[name] = card
             self.account_list_layout.insertWidget(self.account_list_layout.count() - 1, card)
 
+    def refresh_account_card(self, account):
+        card = self.account_widgets[account['name']]
+        card.priority_control.set_value(account_priority(self.controller.preferences, account['name']))
+        t = self.theme.colors()
+        plan = self.quota_cache.get(account['name'], {}).get('data', {}).get('subscription')
+        card.set_heading(self.account_heading(account) + (' · ' + plan if plan else ''))
+        card.set_selected(not self.details_collapsed and account['name'] == self.selected, t)
+        card.setToolTip(self.account_tooltip(account))
+        cached = self.quota_is_cached(account)
+        status = self.account_status_text(account) if account.get('access_issue') or self.account_connection_issue(account) or blocked_families(self.controller.preferences, account['name'], self.quota_groups(account['name'])) else ''
+        if cached:
+            status += ('\n' if status else '') + tr('account_cached_quota')
+        card.status_label.setText(status)
+        card.status_label.setVisible(bool(status))
+        uptime_text = self.uptime_text('antigravity', account['name'])
+        card.uptime_label.setText(uptime_text)
+        card.uptime_label.setVisible(bool(uptime_text))
+        for group in self.quota_groups(account['name']):
+            for bucket in self.visible_quota_buckets(group):
+                row = card.quota_rows[(group['kind'], bucket['window'])]
+                row.bar.set_floor(quota_floor(self.controller.preferences, account['name'], group['kind'], bucket['window']))
+                bounds = (0, 5 * 3600) if bucket['window'] == '5h' else (0, 7 * 86400)
+                cd_color = t['muted'] if cached else self.reset_color(bucket.get('reset'), bounds=bounds, theme_name=self.theme.current)
+                color = t['muted'] if cached else self.quota_color(bucket.get('remaining'))
+                row.update_data(self.sidebar_quota_text(group, bucket), bucket.get('remaining'),
+                    self.time_until_reset(bucket.get('reset'), days_only=bucket['window'] == 'weekly'), cd_color, color)
+
     def account_heading(self, account):
         marker = '!' if account.get('access_issue') or self.account_connection_issue(account) else 'Ⅱ' if account.get('disabled') else '●'
         return marker + '  ' + self.display_name(account)
@@ -1156,7 +1346,12 @@ class App(QMainWindow):
     def account_sort_key(self, account):
         if account.get('access_issue') == 'verification':
             return (0, 0)
-        return (2 if self.account_weekly_depleted(account['name']) else 1, self.account_reset_order(account['name']))
+        row = rank_accounts([account], self.quota_cache, self.target_policy_group(),
+                            preferences=self.controller.preferences)
+        tier = 4 if account.get('disabled') else (row[0]['tier'] if row else 2)
+        return (2 if self.account_weekly_depleted(account['name']) else 1,
+                0 if tier <= 1 else tier, -account_priority(self.controller.preferences, account['name']),
+                self.account_reset_order(account['name']))
 
     def visible_quota_buckets(self, group):
         weekly = next((bucket.get('remaining') for bucket in group['buckets'] if bucket['window'] == 'weekly'), None)
@@ -1175,9 +1370,88 @@ class App(QMainWindow):
                        'login': 'account_sign_in_again', 'denied': 'account_denied'}[issue])
         if account.get('disabled'):
             return tr('account_paused')
+        reserved = blocked_families(self.controller.preferences, account['name'], self.quota_groups(account['name']))
+        if reserved:
+            return tr('Quota reserve reached') + ' · ' + ' / '.join('Gemini' if kind == 'gemini' else 'Claude' for kind in sorted(reserved))
         if self.account_connection_issue(account):
             return tr('account_connection_error')
         return tr('account_enabled_status')
+
+    def uptime_text(self, provider, name):
+        provider = {'grok': 'xai'}.get(provider, provider)
+        value = self.account_uptime.display(provider, name)
+        if not value:
+            return ''
+        minutes = max(0, int(value['seconds'] // 60))
+        days, hours, minutes = minutes // 1440, minutes // 60 % 24, minutes % 60
+        duration = (f"{days}{tr('unit_day')} {hours}{tr('unit_hour')}" if days else
+                    f"{hours}{tr('unit_hour')} {minutes:02}{tr('unit_minute')}")
+        if value['running']:
+            return tr('uptime_valid', time=duration)
+        if value.get('confirmed_auth_loss'):
+            return tr('uptime_stopped', time=duration)
+        return tr('uptime_unknown')
+
+    def check_account_alerts(self):
+        settings = self.controller.preferences.get('notifications', {})
+        if not isinstance(settings, dict):
+            settings = {}
+        events = []
+        providers = [
+            ('antigravity', 'Google', self.items),
+            ('codex', 'ChatGPT', self.chatgpt_accounts),
+            ('claude', 'Claude', self.claude_accounts_panel.rows if hasattr(self, 'claude_accounts_panel') else []),
+            ('xai', 'Grok', self.grok_accounts_panel.rows if hasattr(self, 'grok_accounts_panel') else []),
+        ]
+        for provider, title, accounts in providers:
+            for account in accounts or []:
+                name = account.get('name')
+                if not name:
+                    continue
+                groups = []
+                if provider == 'antigravity':
+                    cached = self.quota_cache.get(name, {})
+                    if cached.get('data') and not self.quota_is_cached(account):
+                        groups = cached['data'].get('groups', [])
+                elif provider in ('codex', 'claude'):
+                    quota = account.get('quota') or {}
+                    if not quota.get('error'):
+                        groups = oauth_quota_groups(quota, provider)
+                auth_lost, reached = account_alert_conditions(account, groups, self.controller.preferences)
+                if self.alert_tracker.transition('auth:' + provider + ':' + name, auth_lost):
+                    if settings.get('auth-required', True):
+                        events.append(tr('alert_auth_body', name=self.display_name(account)))
+                for kind, window, floor_percent in reached:
+                    key = f'quota:{provider}:{name}:{kind}:{window}'
+                    if self.alert_tracker.transition(key, True) and settings.get('quota-reserve', True):
+                        window_label = tr('period_5h') if window == '5h' else tr('period_weekly')
+                        family_names = {'gemini': 'Gemini', 'claude': 'Claude / GPT', 'openai': 'ChatGPT',
+                                        'claude-opus': 'Claude Opus', 'claude-sonnet': 'Claude Sonnet'}
+                        events.append(tr('alert_quota_body', name=self.display_name(account),
+                                         service=family_names.get(kind, title), window=window_label, floor=floor_percent))
+                # Clear reserve transitions only when fresh quota data was available.
+                fresh_quota = (provider == 'antigravity' and bool(groups) or
+                               provider in ('codex', 'claude') and bool(groups))
+                if fresh_quota:
+                    active_quota_keys = {f'quota:{provider}:{name}:{kind}:{window}'
+                                         for kind, window, _ in reached}
+                    for group in groups:
+                        kind = group.get('kind')
+                        for bucket in group.get('buckets', []):
+                            window, remaining = bucket.get('window'), bucket.get('remaining')
+                            if (not kind or not window or isinstance(remaining, bool) or
+                                    not isinstance(remaining, (int, float)) or not math.isfinite(remaining) or
+                                    not 0 <= remaining <= 1):
+                                continue
+                            key = f'quota:{provider}:{name}:{kind}:{window}'
+                            if key not in active_quota_keys:
+                                self.alert_tracker.transition(key, False)
+        if events and QSystemTrayIcon.isSystemTrayAvailable() and hasattr(self, 'tray_icon'):
+            lines = events[:3]
+            if len(events) > 3:
+                lines.append(tr('alert_more', count=len(events) - 3))
+            self.tray_icon.showMessage(tr('alert_title'), '\n'.join(lines),
+                                       QSystemTrayIcon.Warning, 7000)
 
     def quota_is_cached(self, account):
         cached = self.quota_cache.get(account['name'], {})
@@ -1221,9 +1495,10 @@ class App(QMainWindow):
         return min(resets, default=float('inf'))
 
     def sidebar_account_status(self, account):
-        status = tr('account_paused') if account['disabled'] else (tr('account_waiting') if account['unavailable'] else tr('account_available'))
+        label, severity, detail = google_account_status(account, self.quota_groups(account['name']))
+        status = tr(label)
         last = max(self.activity_state['latest'].values(), key=lambda e: e['at'], default=None)
-        if last and last['name'] == account['name'] and not account['disabled']:
+        if label == 'Available' and last and last['name'] == account['name'] and not account['disabled']:
             try:
                 moment = datetime.fromisoformat(last['at'].replace('Z', '+00:00')).astimezone()
                 status = tr('account_last_response', time=moment.strftime('%H:%M:%S'))
@@ -1284,7 +1559,7 @@ class App(QMainWindow):
         self.detail_heading.setFont(QFont('Segoe UI', 22, QFont.Bold))
         add(self.detail_heading)
 
-        if self.display_name(account) != account.get('email') and account.get('email'):
+        if not self.controller.preferences.get('hide-account-names') and self.display_name(account) != account.get('email') and account.get('email'):
             email_label = QLabel(account['email'])
             email_label.setProperty('class', 'muted')
             add(email_label)
@@ -1311,6 +1586,7 @@ class App(QMainWindow):
             for bucket in sorted(group['buckets'], key=lambda b: b['window'] != '5h'):
                 title = tr('detail_weekly_quota') if bucket['window'] == 'weekly' else tr('detail_5h_quota')
                 row = DetailQuotaRow(title)
+                self.bind_reserve_bar(row.bar, account['name'], 'google', group['kind'], bucket['window'])
                 remaining = bucket.get('remaining')
                 color = self.quota_color(remaining)
                 value_text = tr('quota_no_data') if remaining is None else tr('quota_remaining', percent=self.quota_percent(remaining))
@@ -1360,7 +1636,7 @@ class App(QMainWindow):
         rename_layout.setContentsMargins(0, 0, 0, 20)
         self.rename_entry = QLineEdit()
         self.rename_entry.setPlaceholderText(tr('placeholder_label'))
-        self.rename_entry.setText(self.controller.preferences.get('labels', {}).get(account['name'], ''))
+        self.rename_entry.setText('' if self.controller.preferences.get('hide-account-names') else self.controller.preferences.get('labels', {}).get(account['name'], ''))
         rename_layout.addWidget(self.rename_entry, 1)
         save_btn = QPushButton(tr('btn_save_label'))
         save_btn.setToolTip(tr('tip_save_label'))
@@ -1422,6 +1698,7 @@ class App(QMainWindow):
             for bucket in group['buckets']:
                 row = self.detail_quota_widgets.get((group['kind'], bucket['window']))
                 if row:
+                    row.bar.set_floor(quota_floor(self.controller.preferences, self.selected, group['kind'], bucket['window']))
                     remaining = bucket.get('remaining')
                     color = self.theme.color('muted') if stale else self.quota_color(remaining)
                     value_text = tr('quota_no_data') if remaining is None else tr('quota_remaining', percent=self.quota_percent(remaining))
@@ -1467,7 +1744,7 @@ class App(QMainWindow):
                     bucket = next(b for b in group['buckets'] if b['window'] == '5h')
                     v = bucket.get('remaining')
                     if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1:
-                        entry = quota_entry(account, bucket, weekly, 'gemini')
+                        entry = quota_entry(account, bucket, weekly, 'gemini', preferences=self.controller.preferences)
                         values.append(0 if entry.get('weekly_remaining') == 0 else entry['remaining'])
                         entries.append(entry)
 
@@ -1512,6 +1789,7 @@ class App(QMainWindow):
         else:
             self.forecast_widget.setVisible(False)
             self.total_quota_bar.setVisible(True)
+        self.update_policy_summaries()
 
     def fetch_quota(self, name):
         if name in self.quota_pending:
@@ -1551,6 +1829,8 @@ class App(QMainWindow):
             self.quota_pending.discard(name)
             data, error = result
             old = self.quota_cache.get(name, {})
+            if data is not None:
+                self.token_capacity.observe_quota('antigravity', name, data.get('subscription'), data.get('groups', []))
             if data is not None and data.get('summary_error') and old.get('data', {}).get('groups'):
                 data['groups'] = old['data']['groups']
                 data['summary_error'] += ' ' + tr('quota_cached_data')
@@ -1558,6 +1838,7 @@ class App(QMainWindow):
                 'data': data if data is not None else old.get('data', {}),
                 'at': datetime.now().astimezone() if data is not None else old.get('at'),
                 'checked': time.monotonic(), 'error': error}
+            self.check_account_alerts()
             self.draw_account_list()
             self.update_total_quota()
             if self.selected == name:
@@ -1591,12 +1872,19 @@ class App(QMainWindow):
         def fetch():
             try:
                 accounts, records, strategy = self.controller.activity_snapshot()
-                return accounts, copy.deepcopy(self.activity.ingest(records, accounts)), strategy, None, self.controller.quota_wait_status()
+                try:
+                    inventory = self.controller.activity_inventory()
+                    if not isinstance(inventory, list):
+                        inventory = []
+                except (AccountError, OSError, ValueError, TypeError):
+                    inventory = []
+                state = copy.deepcopy(self.activity.ingest(records, accounts))
+                return accounts, state, strategy, None, self.controller.quota_wait_status(), records, inventory
             except Exception:
-                return None, None, None, tr('proxy_unreachable'), {'jobs': []}
+                return None, None, None, tr('proxy_unreachable'), {'jobs': []}, [], []
         def done(result):
             self.activity_busy = False
-            accounts, state, strategy, error, quota_wait = result
+            accounts, state, strategy, error, quota_wait, records, inventory = result
             if error:
                 self.stats_strategy.setText(error)
                 self.set_label_color(self.stats_strategy, 'warning')
@@ -1604,6 +1892,11 @@ class App(QMainWindow):
                 self.items = accounts
                 self.activity_state = state
                 self.activity_strategy = strategy
+                self.account_uptime.update_many('antigravity', accounts)
+                if inventory:
+                    self.token_capacity.observe_usage(records, inventory, bootstrap=not self.capacity_usage_ready)
+                    self.capacity_usage_ready = True
+                self.check_account_alerts()
                 self.render_activity()
                 self.draw_account_list()
                 waiting = [j for j in quota_wait.get('jobs', []) if j.get('state') == 'waiting']
@@ -1630,7 +1923,7 @@ class App(QMainWindow):
         state = self.activity_state
         by_name = {a['name']: a for a in self.items}
         def name(key):
-            return self.display_name(by_name[key]) if key in by_name else key or tr('unknown_account')
+            return self.display_name(by_name[key]) if key in by_name else self.display_name({'name': key, 'email': key}) if key else tr('unknown_account')
         strategy = self.activity_strategy
         if self.policy_rows:
             text = tr('stats_strategy_earliest') + ' • ' + (tr('models_gemini_group') if self.policy_group == 'gemini' else 'Claude / GPT')
@@ -1707,6 +2000,112 @@ class App(QMainWindow):
         content = '\n'.join(lines) or tr('stats_no_events')
         self.stats_journal.setPlainText(content)
         self.stats_observed.setText(tr('stats_monitoring_since', time=self.activity_time(state['since'])))
+        self.render_token_capacity()
+
+    def save_capacity_share(self):
+        if not hasattr(self, 'capacity_share'):
+            return
+        self.controller.preferences['token-capacity-share'] = self.capacity_share.value()
+        self.controller.save()
+
+    def render_token_capacity(self):
+        if not hasattr(self, 'capacity_table'):
+            return
+        rows = [row for row in self.token_capacity.rows() if row.get('ready')]
+        self.capacity_table.setRowCount(len(rows))
+        share = self.capacity_share.value() / 100 if hasattr(self, 'capacity_share') else .2
+        provider_names = {'antigravity': 'Google', 'codex': 'ChatGPT', 'claude': 'Claude'}
+        for index, row in enumerate(rows):
+            provider_label = provider_names.get(row['provider'], row['provider'])
+            if row['provider'] == 'antigravity':
+                provider_label += ' · ' + ('Gemini' if row['family'] == 'gemini' else 'Claude')
+            values = [provider_label, row['plan'], model_name(row['model'], {}),
+                      tr('period_5h') if row['window'] == '5h' else tr('period_weekly'),
+                      f"{int(round(row['capacity'] * share)):,}", str(row['samples_count'])]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                if column == 4:
+                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    cell.setToolTip(tr('capacity_range_tooltip', minimum=f"{row['min_capacity']:,}",
+                                       maximum=f"{row['max_capacity']:,}"))
+                self.capacity_table.setItem(index, column, cell)
+        self.capacity_empty.setVisible(not rows)
+        self.capacity_table.setVisible(bool(rows))
+        self.render_quota_forecasts()
+
+    @staticmethod
+    def format_eta(seconds):
+        if seconds <= 0:
+            return tr('quota_eta_now')
+        minutes = max(1, math.ceil(seconds / 60))
+        days, hours, minutes = minutes // 1440, minutes // 60 % 24, minutes % 60
+        if days:
+            return tr('quota_eta_days', days=days, hours=hours)
+        if hours:
+            return tr('quota_eta_hours', hours=hours, minutes=minutes)
+        return tr('quota_eta_minutes', minutes=minutes)
+
+    def render_quota_forecasts(self):
+        if not hasattr(self, 'forecast_table'):
+            return
+        now = time.time()
+        candidates = []
+        provider_names = {'antigravity': 'Google', 'codex': 'ChatGPT', 'claude': 'Claude'}
+
+        def add_account(provider, account, plan, groups):
+            if account.get('disabled') or not groups:
+                return
+            floors = {}
+            for group in groups:
+                kind = group.get('kind')
+                for bucket in group.get('buckets', []):
+                    window = bucket.get('window')
+                    if kind and window:
+                        floors.setdefault(kind, {})[window] = quota_floor(
+                            self.controller.preferences, account['name'], kind, window) / 100
+            forecasts = self.token_capacity.forecasts(provider, account['name'], plan, groups, floors=floors, now=now)
+            for forecast in forecasts:
+                candidates.append((provider_names.get(provider, provider), self.display_name(account), forecast))
+
+        for account in self.items:
+            cached = self.quota_cache.get(account['name'], {})
+            if not cached.get('data') or self.quota_is_cached(account):
+                continue
+            data = cached['data']
+            add_account('antigravity', account, data.get('subscription'), data.get('groups', []))
+        for provider, accounts in (('codex', self.chatgpt_accounts), ('claude', self.claude_accounts_panel.rows)):
+            for account in accounts:
+                quota = account.get('quota') or {}
+                if quota.get('error'):
+                    continue
+                add_account(provider, account, quota.get('plan_type') or account.get('plan_type'),
+                            oauth_quota_groups(quota, provider))
+
+        candidates.sort(key=lambda item: (item[2]['eta_seconds'], item[0], item[1], item[2]['model']))
+        self.forecast_table.setRowCount(len(candidates))
+        for index, (provider, account_name, row) in enumerate(candidates):
+            window = tr('period_5h') if row['window'] == '5h' else tr('period_weekly')
+            eta = self.format_eta(row['eta_seconds'])
+            reset_delta = row.get('reset_at') - now if row.get('reset_at') is not None else None
+            reset_text = self.format_eta(reset_delta) if reset_delta is not None else tr('quota_reset_unknown')
+            if row['reserve_reached']:
+                outlook = tr('quota_eta_reserve_reached')
+            elif reset_delta is None:
+                outlook = tr('quota_eta_reset_unknown')
+            elif row['eta_seconds'] < max(0, reset_delta):
+                outlook = tr('quota_eta_before_reset')
+            else:
+                outlook = tr('quota_eta_reset_first')
+            values = [provider, account_name, model_name(row['model'], {}), window, eta, reset_text, outlook]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                if column == 4:
+                    cell.setToolTip(tr('quota_eta_confidence', count=row['samples_count']))
+                if column == 6 and outlook == tr('quota_eta_before_reset'):
+                    cell.setForeground(QBrush(QColor(self.theme.color('warning'))))
+                self.forecast_table.setItem(index, column, cell)
+        self.forecast_empty.setVisible(not candidates)
+        self.forecast_table.setVisible(bool(candidates))
 
     # ── Policy ────────────────────────────────────────────────────────
 
@@ -1744,7 +2143,9 @@ class App(QMainWindow):
             self.policy_label.setText(tr('policy_manual'))
             return
         group = self.target_policy_group()
-        rows = rank_accounts(self.items, self.quota_cache, group)
+        rows = rank_accounts(self.items, self.quota_cache, group,
+                             priorities=self.controller.preferences.get('account-priorities', {}),
+                             preferences=self.controller.preferences)
         title = tr('models_gemini_group') if group == 'gemini' else 'Claude / GPT'
         if not rows or all(r['tier'] == 2 for r in rows):
             return
@@ -1781,7 +2182,7 @@ class App(QMainWindow):
         lines = [tr('policy_ranking', title=title)]
         for idx, row in enumerate(self.policy_rows, 1):
             reset = ' • ' + self.activity_time(row['reset']) if row.get('reset') else ''
-            lines.append(f"{idx}. {names.get(row['name'], row['name'])} — {display_reason(row['reason'])}{reset}")
+            lines.append(f"{idx}. {names.get(row['name'], self.display_name({'name': row['name'], 'email': row['name']}))} — {display_reason(row['reason'])}{reset}")
         lines.append(tr('policy_footer'))
         self.policy_label.setText('\n'.join(lines))
         self.set_label_color(self.policy_label, 'muted')
@@ -1879,7 +2280,7 @@ class App(QMainWindow):
         if not account:
             return
         name = account['name']
-        identity = account.get('email') or self.display_name(account)
+        identity = self.display_name(account) if self.controller.preferences.get('hide-account-names') else account.get('email') or self.display_name(account)
         reply = QMessageBox.question(self, tr('confirm_remove_title'),
             tr('confirm_remove_body', email=identity),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -1943,49 +2344,115 @@ class App(QMainWindow):
     def add_account(self):
         if self.busy or self.pending_login:
             return
-        self.work(self.controller.begin_login, self.login_started, mutation=True)
+        self.work(self.controller.begin_login_details, self.login_started, mutation=True)
 
     def login_started(self, result):
-        self.login_url, state = result
+        if not isinstance(result, (tuple, list)) or len(result) not in (2, 3):
+            self.pending_login = None
+            self.add_button.setEnabled(True)
+            self.show_notice(str(result)[:300] or tr('login_failed'), 'warning')
+            return
+        if len(result) == 3:
+            self.login_url, state, self.login_callback_uri = result
+        else:
+            # Keep compatibility with callers and tests that provide the legacy pair.
+            self.login_url, state = result
+            self.login_callback_uri = None
         self.pending_login = (state, time.monotonic())
         self.add_button.setEnabled(False)
         self.show_notice(tr('login_browser_hint'), 'accent')
-        self.login_dialog = QDialog(self)
-        self.login_dialog.setWindowTitle(tr('win_add_account'))
-        self.login_dialog.setMinimumSize(480, 260)
-        self.login_dialog.resize(480, 280)
-        dl = QVBoxLayout(self.login_dialog)
-        dl.setContentsMargins(24, 26, 24, 24)
+        dialog = self.login_dialog = QDialog(self)
+        dialog.setWindowTitle(tr('win_add_account'))
+        dialog.setMinimumSize(500, 390)
+        dialog.resize(520, 420)
+        dl = QVBoxLayout(dialog)
+        dl.setContentsMargins(24, 22, 24, 20)
         heading = QLabel(tr('login_heading'))
-        heading.setFont(QFont('Segoe UI', 22, QFont.Bold))
+        heading.setFont(QFont('Segoe UI', 21, QFont.Bold))
         heading.setAlignment(Qt.AlignCenter)
         heading.setWordWrap(True)
         dl.addWidget(heading)
         hint = QLabel(tr('login_hint'))
-        hint.setFont(QFont('Segoe UI', 13))
+        hint.setFont(QFont('Segoe UI', 12))
         hint.setProperty('class', 'muted')
-        hint.setAlignment(Qt.AlignCenter)
         hint.setWordWrap(True)
         dl.addWidget(hint)
+        browser_buttons = QHBoxLayout()
         reopen_btn = QPushButton(tr('btn_reopen_signin'))
         reopen_btn.setToolTip(tr('login_browser_hint'))
-        reopen_btn.clicked.connect(lambda: webbrowser.open(self.login_url))
-        dl.addWidget(reopen_btn, alignment=Qt.AlignCenter)
+        reopen_btn.clicked.connect(lambda: webbrowser.open(self.login_url or ''))
+        browser_buttons.addWidget(reopen_btn)
+        copy_btn = QPushButton(tr('login_copy_url'))
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(self.login_url or ''))
+        browser_buttons.addWidget(copy_btn)
+        dl.addLayout(browser_buttons)
+        if self.login_callback_uri:
+            callback_hint = QLabel(tr('login_callback_hint'))
+            callback_hint.setWordWrap(True)
+            callback_hint.setProperty('class', 'muted')
+            dl.addWidget(callback_hint)
+            self.login_callback_input = QLineEdit()
+            self.login_callback_input.setObjectName('googleOAuthCallback')
+            self.login_callback_input.setEchoMode(QLineEdit.Password)
+            self.login_callback_input.setPlaceholderText(tr('login_callback_placeholder'))
+            self.login_callback_input.setClearButtonEnabled(True)
+            dl.addWidget(self.login_callback_input)
+            self.login_callback_status = QLabel('')
+            self.login_callback_status.setWordWrap(True)
+            self.login_callback_status.setProperty('class', 'muted')
+            dl.addWidget(self.login_callback_status)
+            submit_btn = QPushButton(tr('login_complete_callback'))
+            def submit_callback():
+                text = self.login_callback_input.text()
+                if not text or not self.pending_login or not self.login_callback_uri:
+                    return
+                submit_btn.setEnabled(False)
+                self.login_callback_input.clear()
+                active_state = self.pending_login[0]
+                redirect_uri = self.login_callback_uri
+                def forward():
+                    try:
+                        self.controller.submit_google_callback(text, redirect_uri, active_state)
+                    except AccountError as error:
+                        return safe_detail(error)
+                def forwarded(error):
+                    if self.login_dialog is not dialog or not dialog.isVisible():
+                        return
+                    submit_btn.setEnabled(True)
+                    if error:
+                        self.login_callback_status.setText(error)
+                        self.login_callback_status.setProperty('class', 'warning')
+                    else:
+                        self.login_callback_status.setText(tr('login_callback_forwarded'))
+                        self.login_callback_status.setProperty('class', 'muted')
+                    self.login_callback_status.style().unpolish(self.login_callback_status)
+                    self.login_callback_status.style().polish(self.login_callback_status)
+                self.work(forward, forwarded, mutation=True)
+            submit_btn.clicked.connect(submit_callback)
+            dl.addWidget(submit_btn)
         wait_label = QLabel(tr('login_waiting'))
-        wait_label.setFont(QFont('Segoe UI', 12))
+        wait_label.setFont(QFont('Segoe UI', 11))
         wait_label.setProperty('class', 'muted')
-        wait_label.setAlignment(Qt.AlignCenter)
+        wait_label.setWordWrap(True)
         dl.addWidget(wait_label)
-        self.login_dialog.show()
+        cancel_btn = QPushButton(tr('chatgpt_cancel'))
+        cancel_btn.clicked.connect(lambda: self.finish_login(tr('login_cancelled'), False, cancel=True))
+        dl.addWidget(cancel_btn)
+        dialog.finished.connect(lambda _: self._google_login_dialog_closed(dialog))
+        dialog.show()
         webbrowser.open(self.login_url)
         QTimer.singleShot(1800, self.poll_login)
+
+    def _google_login_dialog_closed(self, dialog):
+        if self.login_dialog is dialog and self.pending_login:
+            self.finish_login(tr('login_cancelled'), False, cancel=True)
 
     def poll_login(self):
         if not self.pending_login or self.closed:
             return
         state, started = self.pending_login
         if time.monotonic() - started > 310:
-            self.finish_login(tr('login_timeout'), False)
+            self.finish_login(tr('login_timeout'), False, cancel=True)
             return
         def poll():
             try:
@@ -1993,6 +2460,8 @@ class App(QMainWindow):
             except AccountError:
                 return {'status': 'wait'}
         def done(result):
+            if not self.pending_login or self.pending_login[0] != state:
+                return
             if result.get('status') == 'ok':
                 self.finish_login(tr('login_saved'), True)
             elif result.get('status') == 'error':
@@ -2001,12 +2470,21 @@ class App(QMainWindow):
                 QTimer.singleShot(1800, self.poll_login)
         self.work(poll, done)
 
-    def finish_login(self, message, success):
+    def finish_login(self, message, success, cancel=False):
+        state = self.pending_login[0] if self.pending_login else None
         self.pending_login = None
         self.login_url = None
+        self.login_callback_uri = None
+        if self.login_callback_input is not None:
+            self.login_callback_input.clear()
+            self.login_callback_input = None
+        dialog = getattr(self, 'login_dialog', None)
+        self.login_dialog = None
         self.add_button.setEnabled(True)
-        if hasattr(self, 'login_dialog') and self.login_dialog.isVisible():
-            self.login_dialog.close()
+        if dialog is not None and dialog.isVisible():
+            dialog.close()
+        if cancel and not success and state:
+            self.work(lambda: self.controller.cancel_login(state), lambda _: None)
         self.show_notice(message, 'green' if success else 'warning')
         if success:
             def reconcile():
@@ -2362,9 +2840,11 @@ class App(QMainWindow):
             if reply != QMessageBox.Yes:
                 return
             def reset():
-                count = self.integrations.restore()
-                self.controller.preferences = {'labels': {}, 'mode': 'pool', 'selected': None, 'connections-offered': True}
-                self.controller.save()
+                with quota_policy_lock:
+                    clear_quota_limits(self.controller)
+                    count = self.integrations.restore()
+                    self.controller.preferences = {'labels': {}, 'mode': 'pool', 'selected': None, 'connections-offered': True}
+                    self.controller.save()
                 return count
             def done(count):
                 status.setText(tr('conn_restored', count=count))
@@ -2379,9 +2859,34 @@ class App(QMainWindow):
 
     def quota_display_settings(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle(tr('quota_display_settings'))
-        dialog.setMinimumWidth(430)
+        dialog.setWindowTitle(tr('display_settings'))
+        dialog.setMinimumWidth(480)
         layout = QVBoxLayout(dialog)
+        options = QHBoxLayout()
+        language = ThemedComboBox()
+        for code, name in LANGUAGES.items():
+            language.addItem(name, code)
+        language.setCurrentIndex(language.findData(current_language()))
+        language.setToolTip(tr('tip_language'))
+        options.addWidget(language, 1)
+        theme = ThemedComboBox()
+        theme.addItem(tr('theme_light'), 'light')
+        theme.addItem(tr('theme_dark'), 'dark')
+        theme.setCurrentIndex(theme.findData(self.theme.current))
+        options.addWidget(theme, 1)
+        layout.addLayout(options)
+        visibility_hint = QLabel(tr('service_visibility_hint'))
+        visibility_hint.setWordWrap(True)
+        layout.addWidget(visibility_hint)
+        visibility = {}
+        for provider, title in [('google', 'Google · Gemini / Claude'), ('api', tr('tab_api_keys')),
+                                ('codex', 'ChatGPT'), ('claude', 'Claude subscription'),
+                                ('grok', tr('tab_grok_accounts'))]:
+            checkbox = QCheckBox(title)
+            checkbox.setObjectName('serviceVisibility_' + provider)
+            checkbox.setChecked(self.service_visible(provider))
+            visibility[provider] = checkbox
+            layout.addWidget(checkbox)
         hint = QLabel(tr('quota_display_hint'))
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -2392,13 +2897,59 @@ class App(QMainWindow):
         threshold.setSuffix(' %')
         threshold.setValue(weekly_threshold(self.controller.preferences) * 100)
         layout.addWidget(threshold)
+        privacy = QCheckBox(tr('privacy_names'))
+        privacy.setObjectName('hideAccountNamesInput')
+        privacy.setChecked(self.controller.preferences.get('hide-account-names', False))
+        layout.addWidget(privacy)
+        notification_settings = self.controller.preferences.get('notifications', {})
+        if not isinstance(notification_settings, dict):
+            notification_settings = {}
+        notify_auth = QCheckBox(tr('notify_auth_required'))
+        notify_auth.setObjectName('notifyAuthRequired')
+        notify_auth.setChecked(notification_settings.get('auth-required', True))
+        layout.addWidget(notify_auth)
+        notify_reserve = QCheckBox(tr('notify_quota_reserve'))
+        notify_reserve.setObjectName('notifyQuotaReserve')
+        notify_reserve.setChecked(notification_settings.get('quota-reserve', True))
+        layout.addWidget(notify_reserve)
+        reserve_hint = QLabel(tr('quota_reserve_explanation'))
+        reserve_hint.setWordWrap(True)
+        layout.addWidget(reserve_hint)
         save = QPushButton(tr('quota_display_save'))
         save.setObjectName('weeklyThresholdSave')
         def apply():
-            self.controller.preferences['low-weekly-percent'] = threshold.value()
+            selected_language, selected_theme = language.currentData(), theme.currentData()
+            rebuild = selected_language != current_language() or selected_theme != self.theme.current
+            old_notifications = self.controller.preferences.get('notifications', {})
+            if not isinstance(old_notifications, dict):
+                old_notifications = {}
+            new_notifications = {'auth-required': notify_auth.isChecked(),
+                                 'quota-reserve': notify_reserve.isChecked()}
+            if new_notifications['auth-required'] and not old_notifications.get('auth-required', True):
+                self.alert_tracker.clear('auth:')
+            if new_notifications['quota-reserve'] and not old_notifications.get('quota-reserve', True):
+                self.alert_tracker.clear('quota:')
+            self.controller.preferences.update({'low-weekly-percent': threshold.value(),
+                'hide-account-names': privacy.isChecked(), 'notifications': new_notifications,
+                'service-visibility': {p: box.isChecked() for p, box in visibility.items()},
+                'language': selected_language, 'theme': selected_theme})
             self.controller.save()
-            self.draw_account_list()
             dialog.accept()
+            if rebuild:
+                set_language(selected_language)
+                self.theme.current = selected_theme
+                self.retranslate_ui()
+            else:
+                self.draw_account_list()
+                self.detail_account = object()
+                self.draw_detail()
+                self.render_activity()
+                self.render_policy()
+                self.render_chatgpt_accounts()
+                self.claude_accounts_panel.render()
+                self.grok_accounts_panel.render()
+            self.apply_service_visibility()
+            self.check_account_alerts()
         save.clicked.connect(apply)
         layout.addWidget(save)
         self.theme.apply(dialog)
@@ -2459,9 +3010,14 @@ class App(QMainWindow):
         size = self.size()
         view = self.view_stack.currentIndex()
         journal = list(self.journal_filter._buttons).index(self.journal_filter.get())
+        # Preserve provider panels and pending OAuth work while rebuilding labels.
+        self.claude_accounts_panel.setParent(None)
+        self.grok_accounts_panel.setParent(None)
         old = self.takeCentralWidget()
         old.hide()
         old.deleteLater()
+        self._api_drawn = None
+        self._account_structure = None
         self._build_ui()
         self.theme.apply(self)
         self.apply_mica()
@@ -2484,6 +3040,7 @@ class App(QMainWindow):
         self.render_activity()
         self.add_button.setEnabled(not self.busy and not self.pending_login)
         self.pool_button.setEnabled(not self.busy)
+        self.apply_service_visibility()
 
     def _rebuild_stats(self):
         self.stats_title.setText(tr('stats_auto_routing'))

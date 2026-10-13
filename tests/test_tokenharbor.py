@@ -21,7 +21,7 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.requests.append((self.path, dict(self.headers), body))
-        status = self.server.status
+        status = getattr(self.server, 'status_by_key', {}).get(self.headers.get('Authorization'), self.server.status)
         if status != 200:
             data = b'{"error":{"type":"permission_error","message":"Enable free model access"}}'
         elif self.path == '/v1/messages/count_tokens':
@@ -217,3 +217,58 @@ class TokenHarborTests(unittest.TestCase):
         headers = {k.lower(): v for k, v in self.provider.requests[-1][1].items()}
         self.assertEqual(headers['x-api-key'], row['key'])
         self.assertNotIn('authorization', headers)
+
+    def test_desktop_deepseek_alias_preserves_model_history_and_key(self):
+        import api_keys
+        raw = 'deepseek-v4.1-flash:free'
+        row = {'id': 'deepseek', 'label': 'DeepSeek', 'key': 'deepseek-test-secret',
+               'kind': 'tokenharbor', 'base_url': 'https://tokenharbor.ai', 'models': [raw]}
+        self.gate.api_profiles = lambda: [row]
+        alias = api_keys.desktop_model_id(api_keys.catalog_rows([row])[0])
+        status, data, original = self.post(model=alias, stream=True)
+        self.assertEqual(status, 200)
+        self.assertIn(b'message_stop', data)
+        self.assertEqual(self.provider.requests[-1][2], dict(original, model=raw))
+        self.assertEqual(self.provider.requests[-1][1]['Authorization'], 'Bearer ' + row['key'])
+        self.assertNotIn('/v0/management/auth-files', self.native.requests)
+
+    def test_api_fallback_tries_compatible_keys_once_and_counts_each_attempt(self):
+        import api_keys
+        rows = [{'id': ident, 'label': ident, 'key': 'secret-' + ident, 'kind': 'tokenharbor',
+                 'base_url': 'https://tokenharbor.ai', 'models': [MODEL]} for ident in ('one', 'two')]
+        self.gate.api_profiles = lambda: rows
+        self.provider.status_by_key = {'Bearer secret-one': 402}
+        status, data, original = self.post(model=api_keys.model_id(rows[0], MODEL), stream=True)
+        self.assertEqual(status, 200)
+        self.assertIn(b'message_stop', data)
+        self.assertEqual([r[1]['Authorization'] for r in self.provider.requests], ['Bearer secret-one', 'Bearer secret-two'])
+        self.assertTrue(all(r[2] == dict(original, model=MODEL) for r in self.provider.requests))
+        deadline = time.monotonic() + 1
+        while self.gate.snapshot()['jobs'] and time.monotonic() < deadline: time.sleep(.01)
+        stats = self.gate.api_stats.snapshot()
+        self.assertEqual(stats['one']['failed'], 1)
+        self.assertEqual(stats['two']['success'], 1)
+
+    def test_api_fallback_never_crosses_provider_or_model_or_opt_out(self):
+        import api_keys
+        row = {'id': 'one', 'label': 'one', 'key': 'secret-one', 'kind': 'tokenharbor',
+               'base_url': 'https://tokenharbor.ai', 'models': [MODEL]}
+        self.provider.status = 429
+        for other in (dict(row, id='two', base_url='https://other.example'),
+                      dict(row, id='two', models=['different-model']),
+                      dict(row, id='two', enabled=False), dict(row, id='two', rotate=False)):
+            self.gate.api_profiles = lambda: [row, other]
+            before = len(self.provider.requests)
+            self.assertEqual(self.post(model=api_keys.model_id(row, MODEL))[0], 429)
+            self.assertEqual(len(self.provider.requests), before + 1)
+
+    def test_api_pool_exhaustion_returns_error_without_duplicate_response(self):
+        import api_keys
+        rows = [{'id': ident, 'label': ident, 'key': 'secret-' + ident, 'kind': 'tokenharbor',
+                 'base_url': 'https://tokenharbor.ai', 'models': [MODEL]} for ident in ('one', 'two')]
+        self.gate.api_profiles = lambda: rows
+        self.provider.status = 503
+        status, data, _ = self.post(model=api_keys.model_id(rows[0], MODEL), stream=True)
+        self.assertEqual(status, 503)
+        self.assertEqual(len(self.provider.requests), 2)
+        self.assertNotIn(b'message_start', data)

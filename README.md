@@ -45,6 +45,10 @@
 | ⌁ | **API key profiles** | Add, edit, pause or remove keys; choose model IDs and view response, error, token and latency statistics for each key. |
 | ⚡ | **Client setup** | Connect Claude Desktop, Claude Code CLI and Codex. Original client configurations are backed up and can be restored. |
 | ◐ | **An interface that fits** | Light/dark themes, a system tray and five UI languages: English, Russian, Ukrainian, Belarusian and Chinese. |
+| ∑ | **Token estimates** | Approximate tokens available at a chosen quota share, learned from clean usage/quota measurements; resets and mixed-model intervals are excluded. |
+| ⏱ | **Credential uptime** | Shows how long an OAuth sign-in remained confirmed. Network errors, rate limits and manual pauses do not count as lost authentication. |
+| ◉ | **Grok / xAI** | Separate account pool and model discovery through the local gateway. No 5-hour or weekly bars appear when the gateway reports no quota windows. |
+| ◌ | **Alerts and ETA** | Tray alerts for sign-in and quota-reserve transitions, plus an approximate time-to-reserve forecast compared with the next reset. |
 
 <a id="quick-start"></a>
 ## Up and running
@@ -55,6 +59,8 @@
 4. **Choose a model and work.** Pick Gemini, Claude or a separate API model in your client. Keep the manager running to monitor routing and quotas.
 
 When updating, finish active requests first. The installer preserves existing Google sign-ins. Reopen Claude Desktop after changing API models so its model menu refreshes.
+
+To sign in from a separate browser profile, use **Copy sign-in link** in the Google authorization window and open it in that profile. If the browser stops at `Blocked URL: http://localhost:…`, paste the full callback URL into the same window. The app validates the loopback address and OAuth state, then forwards the callback to the local gateway; it does not save the authorization code in app preferences.
 
 <a id="screenshots"></a>
 ## A closer look
@@ -107,6 +113,20 @@ Each key has a separate model identifier. Two keys to the same model remain sepa
 The Windows key editor supports **TokenHarbor** and **Anthropic-compatible HTTPS APIs**. Load the provider's catalog or enter model IDs, one per line. TokenHarbor supports the Anthropic and OpenAI request routes used by the gateway; a provider exposing only OpenAI endpoints needs an Anthropic adapter to work with Claude Desktop.
 
 Key statistics show observed usage, including retry attempts and provider-reported tokens. They do not estimate your provider balance or remaining quota. [Detailed API-key guide →](docs/API_KEYS.md)
+
+## ChatGPT subscriptions
+
+Use the **ChatGPT** tab to sign in in a normal Firefox tab or import an `auth.json` file you select. The app reads each account’s actual 5-hour and weekly windows, shows its plan when reported, and ranks enabled ChatGPT accounts independently of Google. Pause, remove and test an account without switching the Google pool. Available usage-reset credits are consumed only after confirmation.
+
+Reconnect clients to publish GPT models; reopen Claude Desktop to load its menu. Model labels identify ChatGPT, while local route IDs remain compatible with the client’s model filter. No existing Codex account is imported automatically.
+
+The account-list settings can hide account names throughout the manager. Quota and API-statistics updates keep existing cards in place. API-key fallback tries compatible enabled keys for the same provider URL and exact model, before response content is sent; disable it in a key’s editor if needed.
+
+## Your own Claude subscription accounts
+
+The **Claude** tab adds a separate account pool: sign in in a Firefox tab, import a selected OAuth JSON file, read quotas, test a response, pause and remove accounts. Client models are labeled **Claude subscription** and use the native Claude channel, independently of Google models with the same name. Usage is cached for five minutes; Opus- and Sonnet-specific weekly windows stay separate from the general limit.
+
+Automated checks cover ChatGPT and Claude authentication handling, routing and quotas. Real-account sign-in and generation still need separate verification for this build. [Step-by-step Windows guide →](docs/QUICK_START_EN.md)
 
 ## Supported clients
 
@@ -203,3 +223,15 @@ Found a problem? [Open an issue](https://github.com/stasevboris/Gemini_Accounts/
 Based on [GeminiAccounts](https://github.com/nikitaeight24family/GeminiAccounts) by nikitaeight24family, with [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) as the native gateway. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY.md).
 
 <p align="center"><sub>Independent software. Not an official Google, Anthropic or OpenAI product.</sub></p>
+
+## Account priorities and quota reserves
+
+Use the numeric control on each account to set priority from 0 to 999. Higher values go first among available accounts; equal values retain automatic quota/reset ordering. Provider restrictions and exhaustion still apply.
+
+Drag the marker on a quota track, or double-click it to enter a reserve. A 20% reserve stops future requests once 20% remains. The default 0% allows the full quota. Google Gemini/Claude, ChatGPT and Claude subscription windows have independent settings, including Claude model-specific weekly caps. Missing quota holds a configured reserve until refreshed; an active response may cross the boundary before the next measurement.
+
+Collapse account lists and pooled summaries to retain compact quota indicators. The header gear opens language, theme, privacy and service visibility settings from compact mode. Hiding a service keeps its sign-ins, routing and quota polling.
+
+## Compact Claude model menus
+
+Claude Desktop and Claude Code list Google-backed Opus/Sonnet once and show only Gemini 3.8 Flash High, Medium and Low. GPT and explicitly connected API/provider models keep their own entries. Hidden legacy IDs remain valid for existing conversations and background search. Claude Code uses the supported [`modelPicker` setting](https://code.claude.com/docs/en/settings-reference#modelpicker), which requires version 2.1.242 or newer. Restart the client after refreshing its configuration to load the new menu.

@@ -24,11 +24,20 @@ def weekly_depleted(value, threshold=.01):
             (value < threshold if threshold else value == 0))
 
 
-def quota_entry(account, bucket, weekly, group, now=None):
+def quota_entry(account, bucket, weekly, group, now=None, preferences=None):
     """Apply explicit provider quota restrictions before pooling a model family."""
     now = now or datetime.now(timezone.utc)
     entry = {'remaining': bucket['remaining'], 'reset': bucket.get('reset'),
              'weekly_remaining': weekly.get('remaining'), 'weekly_reset': weekly.get('reset')}
+    if preferences:
+        from quota_limits import blocked_families, quota_floor
+        if group in blocked_families(preferences, account['name'], [{'kind': group, 'buckets': [bucket, weekly]}]):
+            entry['remaining'] = 0
+            floor = quota_floor(preferences, account['name'], group, 'weekly')
+            remaining = weekly.get('remaining')
+            if floor and (not isinstance(remaining, (int, float)) or isinstance(remaining, bool)
+                          or not math.isfinite(remaining) or remaining * 100 <= floor):
+                entry['weekly_remaining'] = 0
     blocked = []
     for cooldown in account.get('cooldowns') or []:
         model = str(cooldown.get('model_key') or '').lower()
@@ -81,7 +90,7 @@ def quota_projection(entries, now=None, exhausted_only=True):
     return result
 
 
-def rank_accounts(accounts, caches, group, now=None):
+def rank_accounts(accounts, caches, group, now=None, priorities=None, preferences=None):
     now = now or datetime.now(timezone.utc)
     rows = []
     for account in accounts:
@@ -126,10 +135,20 @@ def rank_accounts(accounts, caches, group, now=None):
         if cooldowns:
             reset = max(cooldowns + ([reset] if tier == 3 and reset else []))
             tier, reason = 3, 'Proxy temporarily excluded this account for this group'
+        from quota_limits import blocked_families
+        reserved = group in cached.get('data', {}).get('reserved_families', [])
+        if preferences:
+            reserved = reserved or group in blocked_families(preferences, account['name'], groups)
+        if reserved:
+            tier, reason = 3, 'Quota reserve reached'
         rows.append({'name': account['name'], 'reset': reset.isoformat() if reset else None,
                      'tier': tier, 'reason': reason, 'remaining': min((b['remaining'] for b in known), default=None),
                      '_sort': (tier, reset.timestamp() if reset else float('inf'), min((b['remaining'] for b in known), default=1), account['name'])})
-    rows.sort(key=lambda r: r['_sort'])
+    priorities = priorities if isinstance(priorities, dict) else {}
+    priorities = {name: value for name, value in priorities.items()
+                  if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 999}
+    rows.sort(key=lambda r: (0 if r['tier'] <= 1 else r['tier'],
+                            -priorities.get(r['name'], 0), *r['_sort']))
     for index, row in enumerate(rows):
         row.pop('_sort')
         row['priority'] = len(rows) - index

@@ -1,6 +1,8 @@
 """Local account control. Credentials remain with CLIProxyAPI, never in the UI."""
 import ctypes
 from ctypes import wintypes
+import hmac
+import http.client
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import secrets
 import subprocess
 import time
 import math
+import re
 import threading
 import urllib.request
 import urllib.error
@@ -205,6 +208,46 @@ class Controller:
         except (OSError, ValueError) as exc:
             raise AccountError('Cannot reach the local Gemini connection.') from None
 
+    def upload_auth_file(self, name, payload):
+        """Import explicitly selected, validated OAuth credentials locally."""
+        if not isinstance(name, str) or not re.fullmatch(r'(?:codex|claude)-import-[a-f0-9]{16}\.json', name) or not isinstance(payload, bytes):
+            raise AccountError('Invalid account import.')
+        provider = 'Claude' if name.startswith('claude-') else 'ChatGPT'
+        url = self.base + '/v0/management/auth-files?' + urllib.parse.urlencode({'name': name})
+        request = urllib.request.Request(url, data=payload, method='POST', headers={
+            'Authorization': 'Bearer ' + (self.key or ''), 'Content-Type': 'application/json'})
+        try:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=15) as response:
+                if json.load(response).get('status') != 'ok':
+                    raise AccountError('The gateway did not accept this ' + provider + ' account.')
+        except urllib.error.HTTPError as error:
+            raise AccountError('The gateway rejected this ' + provider + ' account (HTTP ' + str(error.code) + ').') from None
+        except (OSError, ValueError):
+            raise AccountError('Cannot reach the local gateway to import this ' + provider + ' account.') from None
+
+    def chatgpt_model_choices(self):
+        return self.oauth_model_choices('codex', 'gpt-')
+
+    def claude_subscription_model_choices(self):
+        return self.oauth_model_choices('claude', 'claude-')
+
+    def grok_model_choices(self):
+        return self.oauth_model_choices('xai', 'grok-')
+
+    def oauth_model_choices(self, provider, prefix, accounts=None):
+        from claude_auth import is_desktop_model as is_claude_route
+        accounts = self.request('/auth-files').get('files', []) if accounts is None else accounts
+        accounts = [a for a in accounts if a.get('provider', a.get('type')) == provider and not a.get('disabled')]
+        models = set()
+        for account in accounts:
+            try:
+                entries = self.request('/auth-files/models?' + urllib.parse.urlencode({'name': account['name']})).get('models', [])
+            except AccountError:
+                continue
+            models.update(m['id'] for m in entries if isinstance(m, dict) and isinstance(m.get('id'), str)
+                          and m['id'].startswith(prefix) and not is_claude_route(m['id']))
+        return sorted(models)
+
     def accounts(self):
         result = self.request('/auth-files')
         # Strip everything except display/routing metadata before it reaches the UI.
@@ -234,6 +277,21 @@ class Controller:
                 account['auto_disabled'] = True
             accounts.append(account)
         return accounts
+
+    def activity_inventory(self):
+        """Return only provider identity metadata needed to attribute usage locally."""
+        allowed = ('name', 'auth_index', 'provider', 'type', 'created_at', 'plan_type', 'disabled')
+        inventory = []
+        for item in self.request('/auth-files').get('files', []):
+            provider = item.get('provider', item.get('type'))
+            if (provider not in ('antigravity', 'codex', 'claude', 'xai') or
+                    item.get('runtime_only') or item.get('source') == 'memory'):
+                continue
+            record = {key: item.get(key) for key in allowed if key in item}
+            if record.get('name') and record.get('auth_index'):
+                record['provider'] = provider
+                inventory.append(record)
+        return inventory
 
     @staticmethod
     def access_issue(message):
@@ -497,7 +555,53 @@ class Controller:
                 groups.append({'name': 'Gemini' if kind == 'gemini' else 'Claude / GPT' if kind == 'claude' else title, 'kind': kind, 'buckets': buckets})
         return groups
 
+    @staticmethod
+    def parse_subscription(body):
+        tier = body.get('paidTier') or body.get('currentTier')
+        if not isinstance(tier, dict):
+            return None
+        identifier = tier.get('id')
+        names = {'g1-pro-tier': 'AI Pro', 'g1-ultra-tier': 'AI Ultra', 'free-tier': 'Free'}
+        if identifier in names:
+            return names[identifier]
+        name = tier.get('name') or identifier
+        return name.strip()[:48] if isinstance(name, str) and name.strip() else None
+
+
+    def subscription(self, account):
+        cache = getattr(self, '_subscription_cache', {})
+        self._subscription_cache = cache
+        name, now = account['name'], time.monotonic()
+        cached = cache.get(name)
+        if cached and now < cached['until']:
+            return cached['plan']
+        plan = None
+        try:
+            response = self.request('/api-call', 'POST', {
+                'auth_index': account['auth_index'], 'method': 'POST',
+                'url': 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
+                'header': {'Authorization': 'Bearer $TOKEN$', 'Content-Type': 'application/json',
+                           'User-Agent': 'antigravity/2.19.1 windows/amd64'},
+                'data': json.dumps({'metadata': {'ideType': 'ANTIGRAVITY'}})})
+            if response.get('status_code') == 200:
+                plan = self.parse_subscription(json.loads(response.get('body') or '{}'))
+        except (AccountError, ValueError, TypeError, AttributeError):
+            pass
+        cache[name] = {'plan': plan, 'until': now + (3600 if plan else 300)}
+        return plan
+
+
     def quotas(self, account):
+        from quota_limits import sync_quota_limits
+        try:
+            result = self._provider_quotas(account)
+        except AccountError:
+            sync_quota_limits(self, account, [])
+            raise
+        result['reserved_families'] = sorted(sync_quota_limits(self, account, result['groups']))
+        return result
+
+    def _provider_quotas(self, account):
         payload = {'project': account['project_id']} if account.get('project_id') else {}
         response = self.request('/api-call', 'POST', {
             'auth_index': account['auth_index'], 'method': 'POST',
@@ -541,7 +645,8 @@ class Controller:
         for alias in aliases:
             if alias.get('name') in result:
                 result[alias['alias']] = dict(result[alias['name']])
-        return {'models': result, 'groups': groups, 'summary_error': summary_error}
+        return {'models': result, 'groups': groups, 'summary_error': summary_error,
+                'subscription': self.subscription(account)}
 
     def start_full_quota_windows(self, account, quotas, now=None, last_used=None):
         """Start a fresh five-hour window once per account/provider, using one output token."""
@@ -551,6 +656,9 @@ class Controller:
         results = []
         for group in quotas.get('groups', []):
             kind = group.get('kind')
+            from quota_limits import blocked_families
+            if kind in blocked_families(self.preferences, account['name'], [group]):
+                continue
             if kind not in ('gemini', 'claude'):
                 continue
             # Never fall back to expensive Pro/Sonnet/Opus for a timer trigger.
@@ -667,6 +775,9 @@ class Controller:
         # Delete the exact credential through the provider API, never a filesystem glob.
         self.request('/auth-files?' + urllib.parse.urlencode({'name': name}), 'DELETE')
         self.preferences.get('labels', {}).pop(name, None)
+        for key in ('account-priorities', 'quota-floors'):
+            if isinstance(self.preferences.get(key), dict):
+                self.preferences[key].pop(name, None)
         if self.preferences.get('selected') == name:
             self.preferences['selected'] = None
             self.preferences['mode'] = 'custom'
@@ -684,17 +795,104 @@ class Controller:
         self.preferences.setdefault('labels', {})[name] = label.strip()[:60]
         self.save()
 
-    def begin_login(self):
+    def begin_login_details(self):
         self.login_accounts_before = {a['name'] for a in self.accounts()}
         result = self.request('/antigravity-auth-url?is_webui=true')
         url = result.get('url', '')
         state = result.get('state', '')
         parts = urllib.parse.urlsplit(url)
-        if parts.scheme != 'https' or parts.hostname != 'accounts.google.com' or not state:
+        pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+        values = {}
+        for key, value in pairs:
+            values.setdefault(key, []).append(value)
+        redirect_values = values.get('redirect_uri', [])
+        redirect_uri = redirect_values[0] if len(redirect_values) == 1 else ''
+        if (parts.scheme != 'https' or parts.hostname != 'accounts.google.com' or
+                parts.username or parts.password or parts.fragment or not state or
+                values.get('state') != [state] or len(redirect_values) != 1 or
+                self._safe_google_redirect_uri(redirect_uri) is None):
+            if state:
+                try:
+                    self.request('/oauth-session?' + urllib.parse.urlencode({'state': state}), 'DELETE')
+                except AccountError:
+                    pass
             raise AccountError('Could not obtain a safe Google sign-in URL.')
-        query = dict(urllib.parse.parse_qsl(parts.query))
+        query = dict(pairs)
         query['prompt'] = 'select_account consent'
-        return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query))), state
+        safe_url = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+        return safe_url, state, redirect_uri
+
+    def begin_login(self):
+        """Keep the original CLI return shape while the desktop gets callback metadata."""
+        url, state, _ = self.begin_login_details()
+        return url, state
+
+    @staticmethod
+    def _safe_google_redirect_uri(value):
+        try:
+            parts = urllib.parse.urlsplit(value)
+            port = parts.port
+        except (TypeError, ValueError):
+            return None
+        if (parts.scheme != 'http' or parts.hostname not in ('localhost', '127.0.0.1') or
+                parts.username or parts.password or not port or parts.path != '/oauth-callback' or
+                parts.query or parts.fragment):
+            return None
+        return parts
+
+    def submit_google_callback(self, callback_url, redirect_uri, state):
+        """Forward a pasted localhost OAuth result to the native gateway, in memory only."""
+        text = str(callback_url or '').strip()
+        if text[:12].lower() == 'blocked url:':
+            text = text[12:].strip()
+        if not text or len(text) > 16384 or any(ord(character) < 32 for character in text):
+            raise AccountError('Paste the complete Google callback URL from this sign-in.')
+        expected = self._safe_google_redirect_uri(redirect_uri)
+        try:
+            pasted = urllib.parse.urlsplit(text)
+            pasted_port = pasted.port
+            pairs = urllib.parse.parse_qsl(pasted.query, keep_blank_values=True, strict_parsing=True)
+        except (TypeError, ValueError):
+            raise AccountError('Paste the complete Google callback URL from this sign-in.') from None
+        if expected is None or (pasted.scheme != 'http' or pasted.hostname not in ('localhost', '127.0.0.1') or
+                pasted.username or pasted.password or pasted.fragment or pasted_port != expected.port or
+                pasted.path != expected.path or pasted.hostname != expected.hostname):
+            raise AccountError('The callback URL is not for this local Google sign-in.')
+        values = {}
+        for key, value in pairs:
+            values.setdefault(key, []).append(value)
+        if values.get('error'):
+            raise AccountError('Google did not complete this sign-in. Start again and approve the request.')
+        code_values, state_values = values.get('code', []), values.get('state', [])
+        if len(code_values) != 1 or len(state_values) != 1 or not code_values[0] or not state_values[0]:
+            raise AccountError('The callback URL must contain one authorization code and state.')
+        code, returned_state = code_values[0], state_values[0]
+        if len(code) > 8192 or not hmac.compare_digest(returned_state.encode('utf-8'), str(state or '').encode('utf-8')):
+            raise AccountError('The callback does not match the active Google sign-in. Start again.')
+        try:
+            base = urllib.parse.urlsplit(self.base)
+            base_port = base.port or 80
+            if base.scheme != 'http' or base.hostname not in ('localhost', '127.0.0.1', '::1'):
+                raise ValueError()
+            query = urllib.parse.urlencode({'state': returned_state, 'code': code})
+            connection = http.client.HTTPConnection('127.0.0.1', base_port, timeout=8)
+            try:
+                connection.request('GET', '/antigravity/callback?' + query,
+                                   headers={'Cache-Control': 'no-store'})
+                response = connection.getresponse()
+                response.read(4096)
+                if response.status >= 400:
+                    raise AccountError('The local gateway rejected the Google callback.')
+            finally:
+                connection.close()
+        except AccountError:
+            raise
+        except (OSError, http.client.HTTPException, ValueError, TypeError):
+            raise AccountError('Could not forward the Google callback to the local gateway.') from None
+        return {'status': 'forwarded'}
+
+    def cancel_login(self, state):
+        return self.request('/oauth-session?' + urllib.parse.urlencode({'state': state}), 'DELETE')
 
     def login_status(self, state):
         return self.request('/get-auth-status?' + urllib.parse.urlencode({'state': state}))

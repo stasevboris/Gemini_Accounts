@@ -16,6 +16,7 @@ import bcrypt
 import yaml
 from backend import dpapi, atomic_write, Controller
 from integrations import Integrations
+from runtime import VERSION
 
 
 def prepare_update(root, automatic=False):
@@ -60,6 +61,9 @@ def install(payload, root, shortcuts=True, automatic=False):
                 if attempt == 14:
                     raise
                 time.sleep(.2)
+    for name in ('GeminiAccounts-Guide-RU.txt', 'GeminiAccounts-Guide-EN.txt'):
+        if (payload / name).is_file():
+            shutil.copyfile(payload / name, manager / name)
     config_path = proxy / 'config.yaml'
     if not config_path.exists():
         key, management = secrets.token_urlsafe(40), secrets.token_urlsafe(40)
@@ -71,8 +75,8 @@ def install(payload, root, shortcuts=True, automatic=False):
             'management': {'allow-remote': False, 'disable-control-panel': True,
                            'secret-key': bcrypt.hashpw(management.encode(), bcrypt.gensalt()).decode()},
             'oauth': {'auth-dir': str((proxy / 'auth').resolve()), 'model-alias': {'antigravity': [
-                {'name': 'gemini-3.1-pro-low', 'alias': 'claude-sonnet-4-5', 'display-name': 'Gemini Pro', 'fork': True, 'force-mapping': True},
-                {'name': 'gemini-3-flash', 'alias': 'claude-haiku-4-5', 'display-name': 'Gemini Flash', 'fork': True, 'force-mapping': True}]}},
+                {'name': 'gemini-3.8-flash-high', 'alias': 'claude-sonnet-4-5', 'display-name': 'Gemini Flash High', 'fork': True, 'force-mapping': True},
+                {'name': 'gemini-3.8-flash-low', 'alias': 'claude-haiku-4-5', 'display-name': 'Gemini Flash', 'fork': True, 'force-mapping': True}]}},
             'routing': {'strategy': 'fill-first', 'cooldown': {'save-cooldown-status': True},
                         'retry': {'request-retry': 0, 'max-retry-interval': 0}},
             'quota-exceeded': {'switch-project': True},
@@ -91,7 +95,7 @@ def install(payload, root, shortcuts=True, automatic=False):
             changed = True
     if changed:
         atomic_write(config_path, yaml.safe_dump(config, sort_keys=False).encode())
-    metadata = {'version': '1.3.6'}
+    metadata = {'version': VERSION}
     native_manifest = payload / 'native-build.json'
     if native_manifest.exists():
         native_build = json.loads(native_manifest.read_text('utf-8'))

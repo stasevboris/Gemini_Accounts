@@ -50,17 +50,22 @@ class ClientCatalogTests(unittest.TestCase):
         (self.c.proxy_dir / 'client-key.txt').write_text('client-test-key')
         self.c.preferences.update({'gemini-model': 'gemini-pro-agent', 'claude-model': 'claude-opus-4-6-thinking'})
         self.c.key = 'management-test-key'
-        self.choices = {'gemini': ['gemini-pro-agent', 'gemini-3-flash', 'gemini-3.5-flash-low'],
+        self.choices = {'gemini': ['gemini-pro-agent', 'gemini-3-flash', 'gemini-3.5-flash-low',
+                                 'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low'],
                         'claude': ['claude-opus-4-6-thinking', 'claude-sonnet-4-6', 'claude-haiku-4-5']}
         self.c.family_model_choices = lambda: copy.deepcopy(self.choices)
         self.entries = [{'alias': 'custom', 'name': 'gemini-3-flash'},
                         {'alias': 'claude-sonnet-4-6', 'name': 'claude-opus-4-6-thinking'}]
         self.calls = []
+        self.claude_entries = []
         def request(path, method='GET', payload=None):
             self.calls.append((path, method))
             if method == 'PATCH':
-                self.entries = copy.deepcopy(payload['aliases'])
-            return {'oauth-model-alias': {'antigravity': copy.deepcopy(self.entries)}}
+                if payload['provider'] == 'claude':
+                    self.claude_entries = copy.deepcopy(payload['aliases'])
+                else:
+                    self.entries = copy.deepcopy(payload['aliases'])
+            return {'oauth-model-alias': {'antigravity': copy.deepcopy(self.entries), 'claude': copy.deepcopy(self.claude_entries)}}
         self.c.request = request
         self.client = Integrations(self.c, self.root / 'home', self.root / 'local')
         (self.c.proxy_dir / 'cliproxy-models.json').write_text(json.dumps({'antigravity':
@@ -76,13 +81,14 @@ class ClientCatalogTests(unittest.TestCase):
         self.client.apply(['claude_desktop'])
         models = {entry['name']: entry for entry in self.client.read_json(self.client.paths()['claude_desktop'][2])['inferenceModels']}
         for model in self.choices['gemini'] + self.choices['claude']:
-            self.assertIn(self.client.claude_desktop_route(model), models)
+            self.assertEqual(self.client.claude_desktop_route(model) in models,
+                             self.client._desktop_gemini_visible(model))
         routes = {entry['alias']: entry['name'] for entry in self.entries}
-        self.assertEqual(routes['claude-haiku-4-5'], 'gemini-3-flash')
-        self.assertEqual(routes[self.client.claude_desktop_route('claude-haiku-4-5')], 'claude-haiku-4-5')
+        self.assertEqual(routes['claude-haiku-4-5'], 'gemini-3.8-flash-low')
+        self.assertNotIn(self.client.claude_desktop_route('claude-haiku-4-5'), models)
         self.assertNotIn('claude-sonnet-4-6', routes)
         self.assertEqual(routes['custom'], 'gemini-3-flash')
-        self.assertEqual(sum(name.startswith('api/') for name in models), 1)
+        self.assertEqual(sum(api_keys.is_desktop_model(name) for name in models), 1)
         self.assertEqual((self.c.data_dir / 'api-keys.dpapi').read_bytes(), before)
 
     def test_healing_is_idempotent_and_never_rewrites_clients(self):
@@ -94,6 +100,60 @@ class ClientCatalogTests(unittest.TestCase):
         self.assertFalse(self.client.reconcile_desktop_routes())
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(self.client.backup_path.read_bytes(), backup)
+
+    def test_compact_picker_has_three_flash_tiers_without_duplicates_or_alias_rows(self):
+        self.choices['gemini'] += ['gemini-3.8-flash-high', 'gemini-4-argon', 'gemini-3.1-flash-lite']
+        self.choices['claude'] += ['claude-selected', 'claude-sonnet-4-5-ga-3-5-flash-low']
+        legacy = self.client.claude_desktop_route('gemini-3.5-flash-low')
+        self.entries.append({'alias': legacy, 'name': 'gemini-3.5-flash-low', 'fork': True})
+        self.client.apply(['claude_desktop'])
+        models = self.client.read_json(self.client.paths()['claude_desktop'][2])['inferenceModels']
+        self.assertEqual(len(models), 5)
+        self.assertEqual(len({e['name'] for e in models}), 5)
+        self.assertEqual([e['labelOverride'] for e in models if e['labelOverride'].startswith('Gemini')],
+                         ['Gemini · 3.8 Flash High', 'Gemini · 3.8 Flash Medium', 'Gemini · 3.8 Flash Low'])
+        self.assertEqual(sum(e['isFamilyDefault'] for e in models), 3)
+        self.assertIn(legacy, {e['alias'] for e in self.entries})
+
+    def test_code_picker_keeps_gpt_keys_and_other_settings(self):
+        self.c.chatgpt_model_choices = lambda: ['gpt-6-luna', 'gpt-image-2']
+        api_keys.save_profile(self.c, {'key': 'fake-key', 'base_url': 'https://example.com',
+            'models': ['claude-haiku-5.5:free'], 'label': 'Independent key'})
+        path = self.client.paths()['claude_cli'][0]
+        self.client.write_json(path, {'env': {'OTHER': 'keep'}, 'permissions': {'allow': ['Read']}})
+        self.client.apply(['claude_cli'])
+        settings = self.client.read_json(path)
+        self.assertEqual(settings['env']['OTHER'], 'keep')
+        self.assertEqual(settings['permissions'], {'allow': ['Read']})
+        self.assertTrue(settings['modelPicker']['replaceBuiltInOptions'])
+        options = settings['modelPicker']['options']
+        self.assertEqual(len(options), 8)
+        self.assertIn(settings['env']['ANTHROPIC_MODEL'], {e['model'] for e in options})
+        self.assertEqual({e['label'] for e in options if e['label'].startswith('ChatGPT')},
+                         {'ChatGPT · gpt-6-luna', 'ChatGPT · gpt-image-2'})
+        self.assertEqual(next(e for e in options if e['model'] == 'claude-opus-4-6-thinking')['behavesAs'],
+                         'claude-opus-4-6')
+        self.assertTrue(any(e['label'].startswith('API · Independent key') for e in options))
+
+    def test_menu_migration_preserves_credentials_host_rules_custom_rows_and_old_routes(self):
+        self.client.apply(['claude_desktop'])
+        path = self.client.paths()['claude_desktop'][2]
+        preset = self.client.read_json(path)
+        preset['coworkEgressAllowedHosts'] = ['example.com']
+        preset['inferenceModels'] += [
+            {'name': 'claude-sonnet-4-5', 'labelOverride': 'Gemini · 3.8 Flash High'},
+            {'name': self.client.claude_desktop_route('gemini-3-flash'), 'labelOverride': 'Gemini · 3 Flash'},
+            {'name': 'custom-model', 'labelOverride': 'My custom model'}]
+        self.client.write_json(path, preset)
+        self.assertTrue(self.client.reconcile_desktop_routes())
+        updated = self.client.read_json(path)
+        self.assertEqual(updated['inferenceGatewayApiKey'], preset['inferenceGatewayApiKey'])
+        self.assertEqual(updated['coworkEgressAllowedHosts'], ['example.com'])
+        self.assertEqual(len(updated['inferenceModels']), 6)
+        self.assertTrue(any(e['name'] == 'custom-model' for e in updated['inferenceModels']))
+        before = path.read_bytes()
+        self.assertFalse(self.client.reconcile_desktop_routes())
+        self.assertEqual(path.read_bytes(), before)
 
     def test_unapproved_preset_is_never_healed(self):
         self.client.write_json(self.client.paths()['claude_desktop'][2], {
@@ -124,6 +184,49 @@ class ClientCatalogTests(unittest.TestCase):
         self.assertEqual(self.client.read_json(cache), original)
         self.client.restore()
         self.assertFalse(catalog_path.exists())
+
+    def test_external_client_routes_are_stable_distinct_and_healed(self):
+        for label in ('DeepSeek A', 'DeepSeek B'):
+            api_keys.save_profile(self.c, {'key': 'fake-' + label.replace(' ', '-'), 'base_url': 'https://example.com',
+                'models': ['deepseek-v4.1-flash:free'], 'label': label})
+        self.c.chatgpt_model_choices = lambda: ['gpt-6-sol']
+        self.client.apply(['claude_desktop'])
+        path = self.client.paths()['claude_desktop'][2]
+        models = self.client.read_json(path)['inferenceModels']
+        keys = [m for m in models if api_keys.is_desktop_model(m['name'])]
+        self.assertEqual(len(keys), 2)
+        self.assertNotEqual(keys[0]['name'], keys[1]['name'])
+        from chatgpt_auth import is_desktop_model, desktop_model_id
+        oauth = [m for m in models if is_desktop_model(m['name'])]
+        self.assertEqual(oauth[0]['labelOverride'], 'ChatGPT · gpt-6-sol')
+        self.assertEqual(oauth[0]['name'], desktop_model_id('gpt-6-sol'))
+        routes = {e['alias']: e['name'] for e in self.entries}
+        for entry in api_keys.catalog(self.c):
+            self.assertEqual(routes[api_keys.desktop_model_id(entry)], entry['id'])
+        self.assertEqual(routes[oauth[0]['name']], 'gpt-6-sol')
+        before = path.read_bytes()
+        self.assertFalse(self.client.reconcile_desktop_routes())
+        self.assertFalse(self.client.refresh_desktop_model_labels())
+        self.assertEqual(before, path.read_bytes())
+        self.entries = [e for e in self.entries if not api_keys.is_desktop_model(e['alias'])]
+        self.assertTrue(self.client.reconcile_desktop_routes())
+        self.assertFalse(self.client.reconcile_desktop_routes())
+        self.assertEqual(before, path.read_bytes())
+        rows = api_keys.profiles(self.c)
+        api_keys.save_profile(self.c, dict(rows[0], enabled=False))
+        self.client.refresh_desktop_model_labels()
+        self.assertEqual(sum(api_keys.is_desktop_model(e['alias']) for e in self.entries), 1)
+        self.assertIn('custom', {e['alias'] for e in self.entries})
+
+    def test_client_aliases_cannot_match_non_anthropic_provider_blacklist(self):
+        import re
+        blocked = re.compile(r'deepseek|gemini|gpt|qwen|mistral|abab|openai|codex|kimi|nova', re.I)
+        for i in range(1000):
+            entry = {'id': f'api/key-{i}/deepseek-v4.1-flash:free', 'model': 'deepseek-v4.1-flash:free'}
+            name = api_keys.desktop_model_id(entry)
+            self.assertTrue(api_keys.is_desktop_model(name))
+            self.assertIn('claude', name)
+            self.assertFalse(blocked.search(name))
 
 
 class ApiConnectionChecks(unittest.TestCase):

@@ -14,6 +14,49 @@ from integrations import Integrations
 
 
 class QuotaUITests(unittest.TestCase):
+    def test_google_callback_failure_allows_retry_without_leaking_code(self):
+        w = self.window
+        w.work = lambda operation, done, **kwargs: done(operation())
+        with patch('app.webbrowser.open'), patch.object(self.controller, 'cancel_login'), \
+                patch.object(self.controller, 'submit_google_callback', side_effect=AccountError('Callback rejected')):
+            w.login_started(('https://accounts.google.com/test', 'state-test', 'http://localhost:51121/oauth-callback'))
+            field = w.login_dialog.findChild(QLineEdit, 'googleOAuthCallback')
+            button = next(b for b in w.login_dialog.findChildren(QPushButton) if b.text() == tr('login_complete_callback'))
+            field.setText('http://localhost:51121/oauth-callback?code=private-code&state=state-test')
+            button.click()
+            self.assertTrue(button.isEnabled())
+            self.assertEqual(field.text(), '')
+            self.assertEqual(w.login_callback_status.text(), 'Callback rejected')
+            self.assertNotIn('private-code', w.login_callback_status.text())
+            w.finish_login('Cancelled', False, cancel=True)
+
+    def test_cancelled_google_poll_cannot_finish_a_new_login(self):
+        w = self.window
+        import time
+        callbacks = []
+        w.pending_login = ('old-state', time.monotonic())
+        w.work = lambda operation, done, **kwargs: callbacks.append(done)
+        w.poll_login()
+        w.pending_login = ('new-state', time.monotonic())
+        callbacks[0]({'status': 'ok'})
+        self.assertEqual(w.pending_login[0], 'new-state')
+        w.pending_login = None
+
+    def test_grok_panel_has_status_and_uptime_without_synthetic_quota_bars(self):
+        w = self.window
+        rows = [{'name': 'grok-test', 'email': 'grok@example.com', 'provider': 'xai',
+                 'status': 'active', 'quota': {'windows': [], 'plan_type': 'SuperGrok'}}]
+        w.account_uptime.update_many('xai', rows)
+        panel = w.grok_accounts_panel
+        panel.rows = rows
+        panel.render()
+        self.assertEqual(w.view_stack.count(), 6)
+        self.assertEqual(panel.cards.cards['grok-test']['tracks'], {})
+        self.assertIn('SuperGrok', panel.cards.cards['grok-test']['status'].text())
+        self.assertTrue(panel.cards.cards['grok-test']['uptime'].text())
+        self.assertEqual(w.capacity_table.columnCount(), 6)
+        self.assertEqual(w.forecast_table.columnCount(), 7)
+
     def setUp(self):
         self.qapp = application()
         self.temp = tempfile.TemporaryDirectory()
@@ -139,7 +182,7 @@ class QuotaUITests(unittest.TestCase):
             self.assertTrue(until(lambda:all(r.height() >= r.minimumSizeHint().height() for r in w.detail_quota_widgets.values())))
             image=w.grab().toImage()
             self.assertFalse(image.isNull())
-            self.assertEqual(image.width(),w.width())
+            self.assertEqual(image.width(),round(w.width()*image.devicePixelRatio()))
             Path('build').mkdir(exist_ok=True)
             image.save(str(Path('build')/('pyside-'+theme+'-preview.png')))
 
@@ -156,7 +199,8 @@ class QuotaUITests(unittest.TestCase):
             self.assertEqual(w.palette().color(QPalette.Window).name(),LIGHT['bg'])
             self.assertEqual(w.palette().color(QPalette.Text).name(),LIGHT['text'])
             self.assertEqual(w.service.palette().color(QPalette.WindowText).name(),LIGHT['green'])
-            self.assertEqual(w.grab().toImage().pixelColor(410,3).name(),LIGHT['bg'])
+            preview=w.grab().toImage();ratio=preview.devicePixelRatio()
+            self.assertEqual(preview.pixelColor(round(410*ratio),round(3*ratio)).name(),LIGHT['bg'])
             self.assertNotIn(LIGHT['bg']+'CC',w.styleSheet())
         finally:
             self.qapp.setPalette(original)
@@ -201,7 +245,7 @@ class QuotaUITests(unittest.TestCase):
         self.assertIn(tr('account_sign_in_again'),card.status_label.text())
         self.assertIn(tr('account_cached_quota'),card.status_label.text())
         self.assertAlmostEqual(w.quota_groups('b')[0]['buckets'][0]['remaining'],.7)
-        self.assertIn(w.theme.color('muted'),card.quota_rows[('gemini','5h')].bar.styleSheet())
+        self.assertEqual(w.theme.color('muted'),card.quota_rows[('gemini','5h')].bar._color)
         self.assertEqual(w.total_quota_title.text(),tr('quota_5h_data',count=2,total=3))
         w.animate_active_borders()
         self.assertIn(tr('quota_cached_data'),card.toolTip())
@@ -232,7 +276,7 @@ class QuotaUITests(unittest.TestCase):
         self.assertEqual(called,[True])
 
     def test_all_literal_ui_keys_have_five_translations(self):
-        for source in ('app.py','widgets.py'):
+        for source in ('app.py','widgets.py','chatgpt_ui.py','claude_ui.py','grok_ui.py','policy_ui.py'):
             tree=ast.parse(Path(source).read_text('utf-8'))
             keys={n.args[0].value for n in ast.walk(tree) if isinstance(n,ast.Call)
                 and isinstance(n.func,ast.Name) and n.func.id=='tr' and n.args
@@ -364,5 +408,68 @@ class QuotaUITests(unittest.TestCase):
                 self.assertTrue(until(lambda:all(r.height()>=r.minimumSizeHint().height() for r in w.detail_quota_widgets.values())))
                 self.assertTrue(w.grab().save(str(preview/f'{theme}-{code}.png')))
 
+
+    def test_google_quota_refresh_preserves_card_widgets(self):
+        self.load_accounts()
+        original = dict(self.window.account_widgets)
+        self.window.quota_cache['a']['data']['groups'][0]['buckets'][0]['remaining'] = .3
+        self.window.draw_account_list()
+        self.assertEqual(self.window.account_widgets, original)
+        self.assertIn(self.window.quota_percent(.3), original['a'].quota_rows[('gemini', '5h')].text_label.text())
+
+    def test_chatgpt_panel_and_privacy_keep_google_quota_separate(self):
+        self.load_accounts()
+        w = self.window
+        w.chatgpt_accounts = [{'name': 'chatgpt-one', 'email': 'chatgpt@example.com', 'status': 'active',
+            'quota': {'plan_type': 'plus', 'windows': [{'label': '5h', 'remaining': 75, 'reset_at': 1792000000}]}}]
+        w.render_chatgpt_accounts()
+        w.change_view(tr('tab_chatgpt'))
+        self.assertEqual(w.view_stack.currentIndex(), 3)
+        self.assertEqual(len(w.account_widgets), 3)
+        self.assertTrue(any('75.0%' in l.text() for l in w.chatgpt_cards.findChildren(QLabel)))
+        w.controller.preferences['hide-account-names'] = True
+        w.draw_account_list()
+        w.detail_account = object()
+        w.draw_detail()
+        w.render_chatgpt_accounts()
+        for widget in (w.account_list_widget, w.detail_widget, w.chatgpt_cards):
+            self.assertFalse(any('@example.com' in l.text() for l in widget.findChildren(QLabel) if l.isVisibleTo(widget)))
+
+    def test_api_statistics_update_existing_card(self):
+        import api_keys
+        ident = api_keys.save_profile(self.controller, {'key': 'test-key', 'label': 'Key',
+            'base_url': 'https://example.com', 'models': ['deepseek-test']})
+        self.window.render_api_profiles()
+        metrics = self.window._api_metrics[ident]
+        self.window.api_stats[ident] = {'success': 2, 'failed': 1}
+        self.window.render_api_profiles()
+        self.assertIs(self.window._api_metrics[ident], metrics)
+        self.assertIn('2', metrics.text())
+
+    def test_claude_panel_keeps_accounts_and_privacy_across_languages(self):
+        self.load_accounts()
+        w = self.window
+        panel = w.claude_accounts_panel
+        panel.rows = [{'name': 'claude-one', 'email': 'claude@example.com', 'provider': 'claude',
+            'status': 'active', 'quota': {'plan_type': 'Pro', 'windows': [
+                {'label': '5h', 'remaining': 64.5, 'reset_at': 1893500000},
+                {'label': 'Opus · 1w', 'remaining': 0, 'reset_at': 1893900000}]}}]
+        w.controller.preferences['hide-account-names'] = True
+        w.resize(1120, 850)
+        w.show()
+        preview = Path('build/ui-fix')
+        preview.mkdir(parents=True, exist_ok=True)
+        for code in LANGUAGES:
+            w.lang_combo.setCurrentIndex(w.lang_combo.findData(code))
+            w.change_view(tr('tab_claude_accounts'))
+            panel.render()
+            flush()
+            self.assertIs(w.claude_accounts_panel, panel)
+            self.assertEqual(w.view_stack.currentIndex(), 4)
+            self.assertEqual(len(w.account_widgets), 3)
+            self.assertTrue(any('64.5%' in label.text() for label in panel.cards.findChildren(QLabel)))
+            self.assertFalse(any('claude@example.com' in label.text() for label in panel.cards.findChildren(QLabel)))
+            if code in ('en', 'ru'):
+                self.assertTrue(w.grab().save(str(preview / f'claude-{code}.png')))
 
 if __name__=='__main__':unittest.main()

@@ -18,6 +18,8 @@ from gateway_diagnostics import Diagnostics
 from provider_errors import failure_reason, provider_error_metadata
 import tokenharbor
 import api_keys
+from claude_auth import is_desktop_model as is_claude_subscription
+from desktop_web import SEARCH_HELPERS, desktop_search_request, google_search_models, needs_search_helper
 
 PING = b'event: ping\ndata: {"type":"ping"}\n\n'
 HOP = {'connection', 'transfer-encoding', 'content-length', 'keep-alive',
@@ -72,6 +74,15 @@ def deadline(item):
         return 0
 
 
+def gateway_aliases(channels):
+    aliases = {a['alias']: a['name'] for a in channels.get('antigravity', [])}
+    # A separate channel pins these models to native Claude credentials. Keep
+    # the client alias in inference requests; replacing it would mix providers.
+    aliases.update({a['alias']: 'claude-oauth/' + a['name'] for a in channels.get('claude', [])
+                    if is_claude_subscription(a.get('alias'))})
+    return aliases
+
+
 def quota_wait(files, model, aliases, now=None):
     """Wait only for actual quota blocks, scoped to the requested upstream model."""
     now = time.time() if now is None else now
@@ -81,8 +92,13 @@ def quota_wait(files, model, aliases, now=None):
         # Google credential cooldowns have no bearing on this independent API.
         return None
     quota = []
+    provider = ('claude' if model.startswith('claude-oauth/') or is_claude_subscription(model)
+                else 'codex' if model.startswith('gpt-')
+                else 'xai' if model.startswith('grok-') else 'antigravity')
+    if model.startswith('claude-oauth/'):
+        model = model.split('/', 1)[1]
     enabled = [a for a in files if not a.get('disabled') and
-               a.get('provider', a.get('type')) == 'antigravity']
+               a.get('provider', a.get('type')) == provider]
     for account in enabled:
         if account.get('access_issue') in ('verification', 'login', 'denied'):
             continue
@@ -97,7 +113,8 @@ def quota_wait(files, model, aliases, now=None):
             if code in (401, 403):
                 continue
             return None
-        quota_blocks = [b for b in blocks if b.get('http_status') == 429 and b.get('reason') == 'quota']
+        quota_blocks = [b for b in blocks if b.get('http_status') == 429 and
+                        b.get('reason') in ('quota', 'credential_quota', 'quota_exhausted', 'usage_limit')]
         if quota_blocks:
             quota.append(max(deadline(b) for b in blocks))
     return min(quota) if quota else None
@@ -125,6 +142,22 @@ class QueueServer(ThreadingHTTPServer):
         self.tokenharbor_key = lambda: None
         self.api_profiles = lambda: []
         self.api_stats = api_keys.Stats()
+        self.google_search_models = google_search_models()
+
+    def search_helper_model(self, exclude=()):
+        """Select a supported search model currently published by the native service."""
+        conn = http.client.HTTPConnection(*self.upstream, timeout=5)
+        try:
+            conn.request('GET', '/v1/models', headers={'Authorization': 'Bearer ' + self.client_keys[0]})
+            response = conn.getresponse()
+            if response.status != 200:
+                raise OSError('Search model catalog unavailable')
+            rows = json.loads(response.read()).get('data', [])
+            available = {m['id'] for m in rows if isinstance(m, dict) and isinstance(m.get('id'), str)}
+            return next((m for m in SEARCH_HELPERS if m in available and m not in exclude
+                         and (m.startswith('gpt-') or m in self.google_search_models)), None)
+        finally:
+            conn.close()
 
     def refresh_aliases(self):
         # Hot model selection must also update quota-wait model scoping.
@@ -139,9 +172,9 @@ class QueueServer(ThreadingHTTPServer):
             if response.status == 200:
                 result = json.loads(response.read())
                 if 'oauth-model-alias' in result:
-                    aliases = (result['oauth-model-alias'] or {}).get('antigravity', [])
+                    aliases = gateway_aliases(result['oauth-model-alias'] or {})
                     with self.lock:
-                        self.aliases = {item['alias']: item['name'] for item in aliases}
+                        self.aliases = aliases
         except (OSError, ValueError, KeyError, http.client.HTTPException):
             pass
         finally:
@@ -338,12 +371,32 @@ class Handler(BaseHTTPRequestHandler):
         empty_retries = 0
         rate_retries = 0
         provider_retry_at = 0
+        self.api_attempted = set()
         with self.server.lock:
             if self.server.updating:
                 self.json_reply(503, {'error': {'type':'api_error', 'message':'Gateway updating. Retry shortly.'}})
                 return
             self.server.jobs[ident] = {'model': model, 'state': 'running', 'since': time.time(), 'retry_at': None}
         try:
+            self.desktop_search = guarded and desktop_search_request(request)
+            search_attempted = set()
+            if guarded:
+                self.server.refresh_aliases()
+                actual = self.server.aliases.get(model, model)
+                if self.desktop_search:
+                    search_attempted.add(actual)
+                if needs_search_helper(request, actual, self.server.google_search_models):
+                    helper = self.server.search_helper_model()
+                    if helper is None:
+                        raise ProviderConfigurationError(
+                            'Web search needs an available Google or ChatGPT account. '
+                            'Connect or resume one in Gemini Accounts, then retry the search.')
+                    request['model'] = model = helper
+                    search_attempted.add(helper)
+                    body = json.dumps(request, ensure_ascii=False).encode()
+                    with self.server.lock:
+                        self.server.jobs[ident]['model'] = model
+                    self.trace('desktop_search_routed', requested_model=requested_model, upstream_model=helper)
             while True:
                 accounts = []
                 try:
@@ -377,13 +430,29 @@ class Handler(BaseHTTPRequestHandler):
                 actual_model = self.server.aliases.get(model, model)
                 external = api_keys.is_model(actual_model)
                 self.trace('upstream_started', attempt=attempt, model=model, upstream_model=actual_model,
-                           provider='api' if external else 'antigravity')
-                conn, response = self.await_upstream(lambda: self.open_upstream(body, model=model), stream,
-                                                     cleanup=lambda result: result[0].close())
+                           provider='api' if external else 'claude' if actual_model.startswith('claude-oauth/') else 'codex' if actual_model.startswith('gpt-') else 'antigravity')
+                try:
+                    conn, response = self.await_upstream(lambda: self.open_upstream(body, model=model), stream,
+                                                         cleanup=lambda result: result[0].close())
+                except (OSError, http.client.HTTPException):
+                    self.record_api_attempt()
+                    if external and self.api_fallback_available(actual_model):
+                        self.trace('api_key_fallback', cause='connection_error')
+                        continue
+                    raise
                 started = self.response_started
                 self.api_status = response.status
                 self.trace('upstream_headers', attempt=attempt, status=response.status)
                 try:
+                    if external and response.status >= 400:
+                        error = response.read()
+                        self.trace('provider_rejected', status=response.status, provider='api', reason='API provider rejected request')
+                        if response.status in (401, 402, 403, 429, 500, 502, 503, 504) and self.api_fallback_available(actual_model):
+                            self.trace('api_key_fallback', status=response.status)
+                            continue
+                        self.deliver(response, error, started, stream)
+                        self.api_complete = True
+                        return
                     if response.status in (429, 403, 503):
                         error = response.read()
                         reason = 'API provider rejected request' if external else failure_reason(response.status, error) or 'Provider rejected request'
@@ -394,6 +463,9 @@ class Handler(BaseHTTPRequestHandler):
                         except (OSError, ValueError, http.client.HTTPException):
                             reset = None
                         if response.status == 429:
+                            if actual_model.startswith('gpt-') and not reset:
+                                self.deliver(response, error, started, stream)
+                                return
                             rate_retries += 1
                             delay = min(self.server.retry_max_seconds,
                                         self.server.retry_base_seconds * (2 ** min(rate_retries - 1, 8)))
@@ -403,9 +475,11 @@ class Handler(BaseHTTPRequestHandler):
                                     delay = max(delay, min(reported, 3600))
                             except (ValueError, TypeError):
                                 pass
-                            provider_retry_at = reset if reset else time.time() + delay
+                            # Account cooldowns must be re-evaluated on each poll:
+                            # a newly available account should wake this request.
+                            provider_retry_at = 0 if reset else time.time() + delay
                             self.trace('rate_limit_retry_scheduled', attempt=attempt,
-                                retry_at=provider_retry_at, wait_seconds=max(0, provider_retry_at-time.time()))
+                                retry_at=reset or provider_retry_at, wait_seconds=max(0, (reset or provider_retry_at)-time.time()))
                             continue
                         if reset:
                             continue
@@ -421,8 +495,28 @@ class Handler(BaseHTTPRequestHandler):
                         if not valid:
                             self.api_status = 502
                             self.trace('empty_response', attempt=attempt)
+                            if self.desktop_search:
+                                helper = self.server.search_helper_model(search_attempted)
+                                if helper is None or attempt >= 3:
+                                    self.provider_configuration_error(
+                                        'The available models did not return web-search results. '
+                                        'Check Google/ChatGPT account access and retry the search.', stream)
+                                    return
+                                search_attempted.add(helper)
+                                request['model'] = model = helper
+                                body = json.dumps(request, ensure_ascii=False).encode()
+                                with self.server.lock:
+                                    self.server.jobs[ident]['model'] = model
+                                self.trace('desktop_search_fallback', requested_model=requested_model,
+                                           upstream_model=helper)
+                                continue
+                            if external and self.api_fallback_available(actual_model):
+                                self.trace('api_key_fallback', cause='empty_response')
+                                continue
                             empty_retries += 1
                             if empty_retries <= 2:
+                                if external:
+                                    self.api_attempted.discard(self.api_profile)
                                 with self.server.lock:
                                     self.server.jobs[ident].update(recovery_reason='empty_response', attempt=empty_retries + 1)
                                 continue
@@ -462,7 +556,8 @@ class Handler(BaseHTTPRequestHandler):
     def open_upstream(self, body, model=None):
         actual = self.server.aliases.get(strip_context_suffix(model), strip_context_suffix(model))
         if api_keys.is_model(actual):
-            profile, raw = api_keys.resolve(self.server.api_profiles(), actual)
+            choices = api_keys.candidates(self.server.api_profiles(), actual, getattr(self, 'api_attempted', set()))
+            profile, raw = choices[0] if choices else (None, None)
             # Accept the old direct model ID during migration, without aliasing Google models.
             if profile is None and tokenharbor.is_model(actual) and self.server.tokenharbor_key():
                 profile = {'id': 'tokenharbor', 'kind': 'tokenharbor', 'base_url': 'https://' + tokenharbor.HOST,
@@ -470,6 +565,9 @@ class Handler(BaseHTTPRequestHandler):
                 raw = actual
             if profile is None or not profile.get('key'):
                 raise ProviderConfigurationError('API key is missing or disabled. Add it in the API keys tab (TokenHarbor API key).')
+            if not hasattr(self, 'api_attempted'):
+                self.api_attempted = set()
+            self.api_attempted.add(profile['id'])
             self.api_profile = profile['id']
             self.api_model = raw
             self.api_usage = api_keys.Usage()
@@ -498,6 +596,10 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
                 raise
 
+        if actual and actual.startswith('gpt-') and actual != model:
+            request = json.loads(body)
+            request['model'] = actual
+            body = json.dumps(request, ensure_ascii=False).encode()
         conn = http.client.HTTPConnection(*self.server.upstream, timeout=600)
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
         try:
@@ -506,6 +608,9 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             conn.close()
             raise
+
+    def api_fallback_available(self, model):
+        return bool(api_keys.candidates(self.server.api_profiles(), model, self.api_attempted))
 
     def deliver_validated(self, response, stream):
         """Retry only before any assistant content or tool call reaches the client."""
@@ -516,13 +621,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 value = json.loads(data)
                 self.api_usage.json(value)
-                valid = usable_message(value)
+                valid = usable_message(value, require_search=getattr(self, 'desktop_search', False))
             except (ValueError, AttributeError, TypeError):
                 valid = False
             if valid:
                 self.deliver(response, data, self.response_started, False)
             return valid
-        probe = StreamProbe()
+        probe = StreamProbe(require_search=getattr(self, 'desktop_search', False))
         while True:
             data = self.await_upstream(lambda: response.read1(65536), True)
             if not data:
@@ -679,7 +784,7 @@ def main():
     controller = Controller()
     config = yaml.safe_load((controller.proxy_dir / 'config.yaml').read_text('utf-8-sig'))
     key = dpapi((controller.data_dir / 'management-key.dpapi').read_bytes(), decrypt=True).decode()
-    aliases = {a['alias']: a['name'] for a in config.get('oauth', {}).get('model-alias', {}).get('antigravity', [])}
+    aliases = gateway_aliases(config.get('oauth', {}).get('model-alias', {}))
     keys = config.get('access', {}).get('api-keys', [])
     server = QueueServer(('127.0.0.1', 8317), ('127.0.0.1', config['server']['port']), key, keys, aliases)
     server.diagnostics = Diagnostics(controller.data_dir / 'gateway-diagnostics.jsonl')

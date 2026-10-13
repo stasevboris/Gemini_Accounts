@@ -1,4 +1,5 @@
 """Concrete upstream model names, retaining version and variant information."""
+# Retain historical fallback labels; live routes come from the gateway config.
 DEFAULT_ALIASES = {'claude-sonnet-4-5': 'gemini-3.1-pro-low', 'claude-haiku-4-5': 'gemini-3-flash'}
 
 
@@ -9,10 +10,13 @@ def model_name(model, aliases=None):
         'gemini-3-flash-agent': '3.5 Flash High',
         'gemini-3.5-flash-low': '3.5 Flash Medium',
         'gemini-3.5-flash-extra-low': '3.5 Flash Low',
+        'gemini-4-argon': '4 Argon',
         'claude-haiku-4-5': 'Haiku 4.5',
         'claude-haiku-5.5:free': 'Haiku 5.5 (TokenHarbor)',
         'claude-sonnet-4-6': 'Sonnet 4.6',
         'claude-opus-4-6-thinking': 'Opus 4.6 Thinking',
+        'claude-opus-5-5-high': 'Opus 5.5 High',
+        'claude-sonnet-5-5-high': 'Sonnet 5.5 High',
     }
     if model in known:
         return known[model]

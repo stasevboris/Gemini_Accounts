@@ -45,6 +45,8 @@ if (Test-Path -LiteralPath $nativeManifest) {
 Copy-Item -LiteralPath (Join-Path $upstream 'LICENSE') -Destination (Join-Path $payload 'CLIProxyAPI-LICENSE.txt') -Force
 Copy-Item -LiteralPath 'start-proxy.ps1' -Destination $payload -Force
 Copy-Item -LiteralPath 'assets/cliproxy-models.json' -Destination $payload -Force
+Copy-Item -LiteralPath 'docs/QUICK_START_RU.md' -Destination (Join-Path $payload 'GeminiAccounts-Guide-RU.txt') -Force
+Copy-Item -LiteralPath 'docs/QUICK_START_EN.md' -Destination (Join-Path $payload 'GeminiAccounts-Guide-EN.txt') -Force
 & $Python -m PyInstaller --noconfirm --onefile --windowed --name GeminiAccounts-Setup --icon $icon --add-data ($payload+';payload') --distpath dist --workpath (Join-Path $build 'installer') --specpath $build installer.py
 if ($LASTEXITCODE -ne 0) {throw 'Installer build failed'}
 $sum=(Get-FileHash 'dist/GeminiAccounts-Setup.exe' -Algorithm SHA256).Hash.ToLowerInvariant()

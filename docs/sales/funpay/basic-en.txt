@@ -1,0 +1,39 @@
+BUILD + GUIDE PACKAGE — 490 RUB
+
+SHORT DESCRIPTION
+⚡ Gemini Accounts | Google account switching, quotas & API keys | Build + guide
+
+DETAILED DESCRIPTION
+🖥 GEMINI ACCOUNTS FOR WINDOWS — BUILD AND GUIDE
+
+Manage your accounts and API keys in one application and connect available models to Claude Desktop, Claude Code and Codex.
+
+⚙️ Features:
+• Automatic switching between enabled Google accounts based on available quotas.
+• Separate Gemini and Google-provided Claude quotas, remaining usage and reset times.
+• Multiple API keys and models at the same time.
+• Per-profile statistics for requests, errors, tokens and response time.
+• English and Russian interface, light and dark themes, compact window.
+• Hide account names for screenshots.
+
+📦 Included:
+• Ready-to-install Windows x64 build.
+• Step-by-step English and Russian guides.
+• Self-service installation and connection following the guide.
+
+🔑 You need your own accounts with model access or your own API keys. Accounts, subscriptions and API credit are not included. Your provider determines model availability and limits.
+
+The software is open source. Payment covers delivery of the prepared build and guide. Individual installation and setup assistance are not included in this package.
+
+Message before paying if you are unsure about client or provider compatibility. Screenshots show the actual interface with demonstration data; pictured accounts and quotas are not included in the sale.
+
+MESSAGE TO THE BUYER AFTER PAYMENT
+Thank you for purchasing the Build + Guide package! Message me in this chat and I will send the installer and the English/Russian guides. Installation is self-service. Wait for active requests to finish before updating. Do not send passwords or API keys.
+
+IMAGES
+1. en-dashboard.png — account and quota overview.
+2. en-api-keys.png — API profiles and statistics.
+3. en-connections.png — supported connections.
+
+DELIVERY
+Manual delivery through FunPay chat. If enabling automatic delivery, replace the after-payment message with an actual public download link to the prepared package and verify that it works without authentication. Never link to a personal backup.

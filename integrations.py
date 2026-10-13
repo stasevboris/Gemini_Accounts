@@ -28,6 +28,35 @@ class Integrations:
         self.lock = threading.RLock()
 
     @staticmethod
+    def _desktop_gemini_visible(model):
+        """Limit the Google picker to actual Claude models and Flash 3.8 tiers."""
+        if not isinstance(model, str) or re.search(r'-(?:ga|oauth|subscription|key)-', model):
+            return False
+        if not model.startswith('gemini-'):
+            return model.startswith(('claude-opus-', 'claude-sonnet-')) and model != 'claude-sonnet-4-5'
+        return model in ('gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low')
+
+    def google_client_models(self):
+        choices = self.google_model_choices()
+        models = {m for m in choices['gemini'] + choices['claude'] if self._desktop_gemini_visible(m)}
+        tiers = {'high': 0, 'medium': 1, 'low': 2}
+        return sorted(models, key=lambda m: (0 if m.startswith('claude-opus-') else
+            1 if m.startswith('claude-sonnet-') else 2, tiers.get(m.rsplit('-', 1)[-1], 0), m))
+
+    def google_client_model_entries(self):
+        from model_names import model_name
+        entries, defaults = [], set()
+        for model in self.google_client_models():
+            family = 'Gemini' if model.startswith('gemini-') else 'Claude'
+            tier = 'opus' if model.startswith('claude-opus-') else 'sonnet' if model.startswith('claude-sonnet-') else 'haiku'
+            entries.append({'name': self.claude_desktop_route(model),
+                'labelOverride': family + ' · ' + model_name(model, {}), 'anthropicFamilyTier': tier,
+                'isFamilyDefault': tier not in defaults,
+                'supports1m': extended_context(model), 'prefer1m': extended_context(model)})
+            defaults.add(tier)
+        return entries
+
+    @staticmethod
     def claude_desktop_route(model):
         if model == 'claude-haiku-4-5':
             return 'claude-haiku-4-5-ga-haiku-4-5'
@@ -41,19 +70,19 @@ class Integrations:
     def google_model_choices(self):
         if not self.controller.key:
             selected = self.controller.selected_family_models()
-            return {'gemini': [selected['gemini'], 'gemini-3-flash'], 'claude': [selected['claude']]}
+            return {'gemini': [selected['gemini'], 'gemini-3.8-flash-low'], 'claude': [selected['claude']]}
         try:
             return self.controller.family_model_choices()
         except (AccountError, OSError, KeyError, ValueError):
             selected = self.controller.selected_family_models()
-            return {'gemini': [selected['gemini'], 'gemini-3-flash'], 'claude': [selected['claude']]}
+            return {'gemini': [selected['gemini'], 'gemini-3.8-flash-low'], 'claude': [selected['claude']]}
 
     def configure_desktop_routes(self, models, replace=True, defaults=False):
         payload = self.controller.request('/oauth-model-alias').get('oauth-model-alias') or {}
         entries = [dict(entry) for entry in payload.get('antigravity', [])]
         desired = {self.claude_desktop_route(model): model for model in models
                    if self.claude_desktop_route(model) != model}
-        desired['claude-haiku-4-5'] = 'gemini-3-flash'
+        desired['claude-haiku-4-5'] = 'gemini-3.8-flash-low'
         if defaults:
             selected = self.controller.selected_family_models()
             desired.update({'claude-sonnet-4-5': selected['gemini'], 'gemini-selected': selected['gemini'],
@@ -61,20 +90,26 @@ class Integrations:
         # Remove legacy global overrides only when publishing the full model menu.
         raw_claude = {model for model in models if model.startswith('claude-')} - {'claude-sonnet-4-5', 'claude-haiku-4-5'}
         updated = [entry for entry in entries if entry.get('alias') not in desired and
-                   (not replace or (entry.get('alias') not in raw_claude and '-4-5-ga-' not in entry.get('alias', '')))]
+                   entry.get('alias') not in raw_claude and
+                   (not replace or '-4-5-ga-' not in entry.get('alias', ''))]
         from model_names import model_name
         updated += [{'alias': alias, 'name': model, 'fork': True, 'force-mapping': True,
                      'display-name': model_name(model, {})} for alias, model in desired.items() if alias != model]
-        if updated != entries:
+        if sorted(updated, key=lambda e: e.get('alias', '')) != sorted(entries, key=lambda e: e.get('alias', '')):
             self.controller.request('/oauth-model-alias', 'PATCH', {'provider': 'antigravity', 'aliases': updated})
+            return True
+        return False
 
     def reconcile_desktop_routes(self):
-        """Heal only routes from our previously approved preset; never rewrite clients."""
+        """Heal our approved routes and migrate an absent Desktop web policy."""
         if not self.legacy_desktop_preset():
             return False
         preset_path = self.paths()['claude_desktop'][2]
         if str(preset_path.resolve()) not in self.backups():
             return False
+        api_changed = self.configure_desktop_api_routes()
+        web_changed = self.enable_desktop_web_access()
+        picker_changed = self.refresh_desktop_model_labels()
         preset = self.read_json(preset_path)
         routes = {entry.get('name') for entry in preset.get('inferenceModels', []) if isinstance(entry, dict)}
         selected = self.controller.selected_family_models()
@@ -82,31 +117,61 @@ class Integrations:
         models = {entry['id'] for entry in catalog.get('antigravity', [])
                   if isinstance(entry, dict) and isinstance(entry.get('id'), str)
                   and entry['id'].startswith(('gemini-', 'claude-'))}
-        models.update([selected['gemini'], selected['claude'], 'gemini-3-flash', 'claude-haiku-4-5'])
+        models.update([selected['gemini'], selected['claude'], 'gemini-3.8-flash-low', 'claude-haiku-4-5'])
         known = {self.claude_desktop_route(model): model for model in models}
         known.update({'claude-sonnet-4-5': selected['gemini'], 'gemini-selected': selected['gemini'],
-                      'claude-selected': selected['claude'], 'claude-haiku-4-5': 'gemini-3-flash'})
+                      'claude-selected': selected['claude'], 'claude-haiku-4-5': 'gemini-3.8-flash-low'})
         owned = {route for route in routes if isinstance(route, str) and
                  (route in known or re.fullmatch(r'claude-(?:sonnet|haiku)-4-5-ga-[a-z0-9-]+', route))}
         if not owned:
-            return False
+            return api_changed or web_changed or picker_changed
         unknown = owned - known.keys()
         if unknown:
             raise AccountError('Connected Google models are missing from the gateway catalog. Reconnect Claude Desktop.')
         desired = {route: known[route] for route in owned if route != known[route]}
-        desired['claude-haiku-4-5'] = 'gemini-3-flash'
+        desired['claude-haiku-4-5'] = 'gemini-3.8-flash-low'
         payload = self.controller.request('/oauth-model-alias').get('oauth-model-alias') or {}
         entries = [dict(entry) for entry in payload.get('antigravity', [])]
         live = {entry.get('alias'): entry.get('name') for entry in entries}
         self_routes = {route for route in owned if route == known[route] and route in live}
         if not self_routes and all(live.get(route) == model for route, model in desired.items()):
-            return False
+            return api_changed or web_changed or picker_changed
         from model_names import model_name
         updated = [entry for entry in entries if entry.get('alias') not in desired and entry.get('alias') not in self_routes]
         updated += [{'alias': route, 'name': model, 'fork': True, 'force-mapping': True,
                      'display-name': model_name(model, {})} for route, model in desired.items()]
         self.controller.request('/oauth-model-alias', 'PATCH', {'provider': 'antigravity', 'aliases': updated})
         return True
+
+    def configure_desktop_api_routes(self):
+        """Publish separate API and subscription routes, preserving custom aliases."""
+        if not self.controller.key:
+            return False
+        from api_keys import catalog, desktop_model_id, is_desktop_model
+        from chatgpt_auth import desktop_model_id as oauth_id, is_desktop_model as is_oauth
+        from claude_auth import desktop_model_id as claude_id, is_desktop_model as is_claude
+        with self.lock:
+            payload = self.controller.request('/oauth-model-alias').get('oauth-model-alias') or {}
+            entries = [dict(entry) for entry in payload.get('antigravity', [])]
+            updated = [entry for entry in entries if not (is_desktop_model(entry.get('alias')) or is_oauth(entry.get('alias')))]
+            updated += [{'alias': desktop_model_id(entry), 'name': entry['id'], 'fork': True,
+                         'force-mapping': True, 'display-name': entry['label']}
+                        for entry in catalog(self.controller)]
+            updated += [{'alias': oauth_id(model), 'name': model, 'fork': True, 'force-mapping': True,
+                         'display-name': 'ChatGPT · ' + model} for model in self.chatgpt_model_choices()]
+            changed = False
+            if sorted(updated, key=lambda e: e.get('alias', '')) != sorted(entries, key=lambda e: e.get('alias', '')):
+                self.controller.request('/oauth-model-alias', 'PATCH', {'provider': 'antigravity', 'aliases': updated})
+                changed = True
+            entries = [dict(entry) for entry in payload.get('claude', [])]
+            updated = [entry for entry in entries if not is_claude(entry.get('alias'))]
+            updated += [{'alias': claude_id(model), 'name': model, 'fork': True,
+                         'display-name': 'Claude subscription · ' + model}
+                        for model in self.claude_subscription_model_choices()]
+            if sorted(updated, key=lambda e: e.get('alias', '')) != sorted(entries, key=lambda e: e.get('alias', '')):
+                self.controller.request('/oauth-model-alias', 'PATCH', {'provider': 'claude', 'aliases': updated})
+                changed = True
+            return changed
 
     def detected(self):
         return {
@@ -136,56 +201,101 @@ class Integrations:
             preset = self.read_json(library / (preset_id + '.json'))
             models = preset.get('inferenceModels', [])
             if (preset.get('inferenceGatewayBaseUrl', '').rstrip('/') == 'http://127.0.0.1:8317'
-                    and any(m.get('labelOverride', '').startswith('Gemini') for m in models)):
+                    and (preset.get('deploymentDisplayName') == 'Gemini Accounts'
+                         or any(m.get('labelOverride', '').startswith('Gemini') for m in models))):
                 return preset_id
         except (OSError, ValueError, TypeError, AttributeError):
             pass
         return None
 
     def refresh_desktop_model_labels(self):
-        """Refresh subscription labels and independent API entries in our preset."""
+        """Replace only our picker entries; retain custom rows and host settings."""
         if not self.legacy_desktop_preset():
-            return False
+            return self.configure_desktop_api_routes()
         path = self.paths()['claude_desktop'][2]
         preset = self.read_json(path)
-        aliases = self.controller.model_aliases()
-        catalog = self.read_json(self.controller.proxy_dir / 'cliproxy-models.json')
-        known = [entry['id'] for entry in catalog.get('antigravity', []) if isinstance(entry, dict)
-                 and isinstance(entry.get('id'), str) and entry['id'].startswith(('gemini-', 'claude-'))]
-        selected = self.controller.selected_family_models()
-        known += [selected['gemini'], selected['claude'], 'gemini-3-flash', 'claude-haiku-4-5']
-        aliases = {**{self.claude_desktop_route(model): model for model in known}, **aliases}
-        from model_names import model_name
-        changed = False
         original = copy.deepcopy(preset.get('inferenceModels', []))
-        preset['inferenceModels'] = [entry for entry in preset.get('inferenceModels', []) if not entry['name'].startswith('api/')]
-        for entry in preset.get('inferenceModels', []):
-            model = aliases.get(entry['name'], entry['name'])
-            family = 'Gemini' if model.startswith('gemini-') else 'Claude' if model.startswith('claude-') else ''
-            if not family:
-                continue
-            label = family + ' · ' + model_name(model, {})
-            if entry.get('labelOverride') != label:
-                entry['labelOverride'] = label
-                changed = True
-            for flag in ('supports1m', 'prefer1m'):
-                if entry.get(flag, False) != extended_context(model):
-                    entry[flag] = extended_context(model)
-                    changed = True
-        preset['inferenceModels'].extend(self.api_model_entries())
+        changed = self.default_desktop_web_access(preset)
+        from api_keys import is_model
+        from chatgpt_auth import is_desktop_model as is_oauth
+        from claude_auth import is_desktop_model as is_claude
+        catalog = self.read_json(self.controller.proxy_dir / 'cliproxy-models.json')
+        google_names = {m['id'] for m in catalog.get('antigravity', [])
+                        if isinstance(m, dict) and isinstance(m.get('id'), str)}
+        google_names.update(('claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-selected', 'gemini-selected'))
+        google = self.google_client_model_entries()
+        google_names.update(e['name'] for e in google)
+        def managed(entry):
+            name = entry.get('name', '')
+            label = entry.get('labelOverride', '')
+            return (is_model(name) or is_oauth(name) or is_claude(name) or
+                    '-4-5-ga-' in name or name in google_names and label.startswith(('Gemini', 'Claude')) or
+                    name.startswith('grok-') and label.startswith('Grok · '))
+        custom = [e for e in original if isinstance(e, dict) and not managed(e)]
+        preset['inferenceModels'] = custom + google + self.api_model_entries() + self.chatgpt_model_entries() + self.claude_subscription_model_entries() + self.grok_model_entries()
+        routes_changed = False
+        if self.controller.key:
+            routes_changed = self.configure_desktop_routes(self.google_client_models(), replace=False)
+        api_changed = self.configure_desktop_api_routes()
         changed = changed or original != preset['inferenceModels']
         if changed:
             with self.lock:
                 self.remember([path])
                 self.write_json(path, preset)
-        return changed
+        return changed or routes_changed or api_changed
 
     def api_model_entries(self):
-        from api_keys import catalog
-        return [{'name': entry['id'], 'labelOverride': entry['label'],
+        from api_keys import catalog, desktop_model_id
+        return [{'name': desktop_model_id(entry), 'labelOverride': entry['label'],
                  'anthropicFamilyTier': 'haiku' if 'haiku' in entry['model'] else 'opus' if 'opus' in entry['model'] else 'sonnet',
                  'isFamilyDefault': False, 'supports1m': False, 'prefer1m': False}
                 for entry in catalog(self.controller)]
+
+    def chatgpt_model_choices(self):
+        if not self.controller.key:
+            return []
+        try:
+            return self.controller.chatgpt_model_choices()
+        except (AccountError, OSError, ValueError, KeyError):
+            return []
+
+    def chatgpt_model_entries(self):
+        from chatgpt_auth import desktop_model_id
+        return [{'name': desktop_model_id(model), 'labelOverride': 'ChatGPT · ' + model,
+                 'anthropicFamilyTier': 'sonnet', 'isFamilyDefault': False,
+                 'supports1m': False, 'prefer1m': False} for model in self.chatgpt_model_choices()]
+
+    def claude_subscription_model_choices(self):
+        if not self.controller.key:
+            return []
+        try:
+            return self.controller.claude_subscription_model_choices()
+        except (AccountError, OSError, ValueError, KeyError):
+            return []
+
+    def grok_model_choices(self):
+        if not self.controller.key:
+            return []
+        try:
+            choices = self.controller.grok_model_choices()
+            return choices if isinstance(choices, list) else []
+        except (AccountError, OSError, ValueError, KeyError, TypeError, AttributeError):
+            return []
+
+    def grok_model_entries(self):
+        from model_names import model_name
+        return [{'name': model, 'labelOverride': 'Grok · ' + model_name(model, {}),
+                 'anthropicFamilyTier': 'sonnet', 'isFamilyDefault': False,
+                 'supports1m': False, 'prefer1m': False}
+                for model in self.grok_model_choices()]
+
+    def claude_subscription_model_entries(self):
+        from claude_auth import desktop_model_id
+        from model_names import model_name
+        return [{'name': desktop_model_id(model), 'labelOverride': 'Claude subscription · ' + model_name(model, {}),
+                 'anthropicFamilyTier': 'haiku' if 'haiku' in model else 'opus' if 'opus' in model else 'sonnet',
+                 'isFamilyDefault': False, 'supports1m': False, 'prefer1m': False}
+                for model in self.claude_subscription_model_choices()]
 
     def backups(self):
         if not self.backup_path.exists():
@@ -212,6 +322,27 @@ class Integrations:
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + '\n').encode())
 
+    @staticmethod
+    def default_desktop_web_access(preset):
+        """Allow links in our Desktop preset without replacing explicit host rules."""
+        if 'coworkEgressAllowedHosts' in preset:
+            return False
+        preset['coworkEgressAllowedHosts'] = ['*']
+        return True
+
+    def enable_desktop_web_access(self):
+        """Migrate only our existing preset, retaining models and credentials."""
+        if not self.legacy_desktop_preset():
+            return False
+        with self.lock:
+            path = self.paths()['claude_desktop'][2]
+            preset = self.read_json(path)
+            if not self.default_desktop_web_access(preset):
+                return False
+            self.remember([path])
+            self.write_json(path, preset)
+            return True
+
     def apply(self, clients):
         clients = list(dict.fromkeys(clients))
         if not clients or any(client not in self.paths() for client in clients):
@@ -233,8 +364,8 @@ class Integrations:
             before = {p: p.read_bytes() if p.exists() else None for p in paths}
             self.remember(paths)
             alias_before = None
-            if 'claude_desktop' in clients and self.controller.key:
-                alias_before = (self.controller.request('/oauth-model-alias').get('oauth-model-alias') or {}).get('antigravity', [])
+            if self.controller.key:
+                alias_before = self.controller.request('/oauth-model-alias').get('oauth-model-alias') or {}
             try:
                 for client in clients:
                     getattr(self, 'configure_' + client)(key)
@@ -245,26 +376,42 @@ class Integrations:
                     else:
                         atomic_write(path, data)
                 if alias_before is not None:
-                    self.controller.request('/oauth-model-alias', 'PATCH', {'provider': 'antigravity', 'aliases': alias_before})
+                    for provider in ('antigravity', 'claude'):
+                        self.controller.request('/oauth-model-alias', 'PATCH', {'provider': provider, 'aliases': alias_before.get(provider, [])})
                 raise
         return clients
 
     def configure_claude_cli(self, key):
+        if self.controller.key:
+            self.configure_desktop_routes(self.google_client_models(), replace=False)
+        self.configure_desktop_api_routes()
         path = self.paths()['claude_cli'][0]
         settings = self.read_json(path)
         families = self.controller.selected_family_models()
-        gemini = client_model_id('claude-sonnet-4-5', families['gemini'])
-        claude = client_model_id('claude-selected', families['claude'])
+        visible = self.google_client_models()
+        preferred = families['gemini'] if families['gemini'] in visible else next(
+            (m for m in visible if m.startswith('gemini-')), 'gemini-3.8-flash-low')
+        gemini = client_model_id(self.claude_desktop_route(preferred), preferred)
+        sonnet = next((m for m in visible if m.startswith('claude-sonnet-')), 'claude-sonnet-4-6')
+        opus = next((m for m in visible if m.startswith('claude-opus-')), 'claude-opus-4-6-thinking')
         settings.setdefault('env', {}).update({
             'ANTHROPIC_BASE_URL': 'http://127.0.0.1:8317',
             'ANTHROPIC_AUTH_TOKEN': key, 'ANTHROPIC_API_KEY': '',
             'ANTHROPIC_MODEL': gemini,
-            'ANTHROPIC_DEFAULT_SONNET_MODEL': gemini,
-            'ANTHROPIC_DEFAULT_HAIKU_MODEL': client_model_id('gemini-3-flash', 'gemini-3-flash'),
-            'ANTHROPIC_DEFAULT_OPUS_MODEL': claude if self.controller.preferences.get('claude-model') else 'claude-opus-4-6-thinking',
+            'ANTHROPIC_DEFAULT_SONNET_MODEL': sonnet,
+            'ANTHROPIC_DEFAULT_HAIKU_MODEL': client_model_id(self.claude_desktop_route('gemini-3.8-flash-low'), 'gemini-3.8-flash-low'),
+            'ANTHROPIC_DEFAULT_OPUS_MODEL': opus,
             'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY': '1',
             'API_TIMEOUT_MS': '604800000', 'CLAUDE_ENABLE_STREAM_WATCHDOG': '0',
         })
+        entries = (self.google_client_model_entries() + self.api_model_entries() +
+                   self.chatgpt_model_entries() + self.claude_subscription_model_entries() + self.grok_model_entries())
+        settings['modelPicker'] = {'replaceBuiltInOptions': True,
+            'options': [{'model': e['name'] + ('[1m]' if e.get('supports1m') else ''),
+                         'label': e['labelOverride']} for e in entries]}
+        for entry in settings['modelPicker']['options']:
+            if entry['model'] == 'claude-opus-4-6-thinking':
+                entry['behavesAs'] = 'claude-opus-4-6'
         self.write_json(path, settings)
 
     def provider_toml(self, key):
@@ -277,6 +424,7 @@ class Integrations:
         ])
 
     def configure_codex(self, key):
+        self.configure_desktop_api_routes()
         path, profile, catalog_path = self.paths()['codex']
         text = path.read_text('utf-8-sig') if path.exists() else ''
         text = re.sub(re.escape(BEGIN) + r'.*?' + re.escape(END) + r'\s*', '', text, flags=re.S)
@@ -313,20 +461,26 @@ class Integrations:
         template = next((entry for entry in models if isinstance(entry, dict)), None)
         if template is None:
             return False
-        for model in choices['gemini'] + choices['claude']:
+        from claude_auth import desktop_model_id
+        subscription = {desktop_model_id(model): model for model in self.claude_subscription_model_choices()}
+        for model in choices['gemini'] + choices['claude'] + self.chatgpt_model_choices() + list(subscription) + self.grok_model_choices():
             if model in existing:
                 continue
             entry = copy.deepcopy(template)
-            family = 'Gemini' if model.startswith('gemini-') else 'Claude'
+            family = ('Grok' if model.startswith('grok-') else 'Gemini' if model.startswith('gemini-')
+                      else 'ChatGPT' if model.startswith('gpt-') else 'Claude')
             window = CONTEXT_WINDOWS.get(model, 200000)
-            entry.update(slug=model, display_name=family + ' · ' + model_name(model, {}),
-                         description='Google subscription via Gemini Accounts', priority=50,
+            display = ('Claude subscription · ' + model_name(subscription[model], {})) if model in subscription else family + ' · ' + model_name(model, {})
+            description = ('Claude subscription' if model in subscription else 'ChatGPT' if model.startswith('gpt-')
+                           else 'Grok' if model.startswith('grok-') else 'Google subscription') + ' via Gemini Accounts'
+            entry.update(slug=model, display_name=display, description=description, priority=50,
                          model_messages={}, base_instructions='You are a helpful coding assistant.',
                          context_window=window, max_context_window=window,
                          additional_speed_tiers=[], service_tiers=[], availability_nux=None, upgrade=None)
-            effort = reasoning_level(model)
+            effort = (template.get('default_reasoning_level', 'medium') if model.startswith('gpt-') else
+                      'medium' if model.startswith('grok-') else reasoning_level(model))
             entry['default_reasoning_level'] = effort
-            entry['supported_reasoning_levels'] = [{'effort': effort, 'description': effort.title()}]
+            entry['supported_reasoning_levels'] = copy.deepcopy(template.get('supported_reasoning_levels', [])) if model.startswith('gpt-') else [{'effort': effort, 'description': effort.title()}]
             models.append(entry)
             existing.add(model)
         self.write_json(target, catalog)
@@ -334,41 +488,22 @@ class Integrations:
 
     def configure_claude_desktop(self, key):
         desktop, meta_path, preset = self.paths()['claude_desktop']
-        family_models = self.controller.selected_family_models()
-        from model_names import model_name
-        models = [('claude-sonnet-4-5', 'Gemini · ' + model_name(family_models['gemini'], {}), 'sonnet', True),
-                  ('claude-selected' if self.controller.preferences.get('claude-model') else 'claude-opus-4-6-thinking',
-                   'Claude · ' + model_name(family_models['claude'] if self.controller.preferences.get('claude-model') else 'claude-opus-4-6-thinking', {}), 'opus', True),
-                  (self.claude_desktop_route('gemini-3-flash'), 'Gemini · 3 Flash', 'haiku', True)]
-        choices = self.google_model_choices()
-        all_models = list(dict.fromkeys(choices['gemini'] + choices['claude'] +
-            [family_models['gemini'], family_models['claude'], 'gemini-3-flash']))
-        seen = {entry[0] for entry in models}
-        route_targets = {entry[0]: target for entry, target in zip(models,
-            [family_models['gemini'], family_models['claude'], 'gemini-3-flash'])}
-        for model in all_models:
-            route = self.claude_desktop_route(model)
-            if route in seen:
-                continue
-            family = 'Gemini' if model.startswith('gemini-') else 'Claude'
-            tier = 'opus' if 'opus' in model else 'haiku' if any(word in model for word in ('haiku', 'flash', 'lite')) else 'sonnet'
-            models.append((route, family + ' · ' + model_name(model, {}), tier, False))
-            seen.add(route)
-            route_targets[route] = model
         if self.controller.key:
-            self.configure_desktop_routes(all_models, defaults=True)
-        self.write_json(preset, {
+            # Hidden legacy routes remain valid for existing conversations.
+            self.configure_desktop_routes(self.google_client_models(), replace=False, defaults=True)
+            self.configure_desktop_api_routes()
+        preset_data = self.read_json(preset)
+        preset_data.update({
             'deploymentDisplayName': 'Gemini Accounts', 'inferenceCredentialKind': 'static',
             'modelDiscoveryEnabled': False, 'inferenceGatewayAuthScheme': 'bearer',
             'inferenceProvider': 'gateway', 'inferenceGatewayApiKey': key,
             'inferenceGatewayBaseUrl': 'http://127.0.0.1:8317',
             'claudeAiImport': {'bannerBehavior': 'detect', 'exportEnabled': True, 'enabled': True},
-            'inferenceModels': [
-                {'name': name, 'labelOverride': label, 'anthropicFamilyTier': tier, 'isFamilyDefault': default,
-                 'supports1m': extended_context(route_targets[name]),
-                 'prefer1m': extended_context(route_targets[name])}
-                for name, label, tier, default in models] + self.api_model_entries(),
+            'inferenceModels': (self.google_client_model_entries() + self.api_model_entries() +
+                self.chatgpt_model_entries() + self.claude_subscription_model_entries() + self.grok_model_entries()),
         })
+        self.default_desktop_web_access(preset_data)
+        self.write_json(preset, preset_data)
         meta = self.read_json(meta_path)
         entries = meta.setdefault('entries', [])
         preset_id = preset.stem

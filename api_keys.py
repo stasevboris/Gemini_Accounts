@@ -1,5 +1,7 @@
 """Independent API profiles, encrypted credentials and metadata-only usage."""
 import json
+import hashlib
+import re
 import secrets
 import threading
 import urllib.parse
@@ -16,8 +18,20 @@ def model_id(profile, model):
     return 'api/' + profile['id'] + '/' + model
 
 
+def desktop_model_id(entry):
+    """Opaque client route; the display label and upstream model stay explicit."""
+    tier = 'haiku' if 'haiku' in entry['model'] else 'opus' if 'opus' in entry['model'] else 'sonnet'
+    # Decimal digits cannot accidentally match Claude Desktop's provider blacklist.
+    ident = int.from_bytes(hashlib.sha256(entry['id'].encode()).digest()[:12], 'big')
+    return f'claude-{tier}-4-5-key-{ident}'
+
+
+def is_desktop_model(model):
+    return isinstance(model, str) and bool(re.fullmatch(r'claude-(?:haiku|opus|sonnet)-4-5-key-\d{1,29}', model))
+
+
 def is_model(model):
-    return isinstance(model, str) and (model.startswith('api/') or model == 'claude-haiku-5.5:free')
+    return isinstance(model, str) and (model.startswith('api/') or is_desktop_model(model) or model == 'claude-haiku-5.5:free')
 
 
 def profiles(controller, private=False):
@@ -86,7 +100,7 @@ def temporary_profile(controller, row):
     path = controller.data_dir / 'api-keys.dpapi'
     with _PROFILE_LOCK:
         before = path.read_bytes() if path.exists() else None
-        temporary = dict(row, id='test-' + secrets.token_hex(8), enabled=True)
+        temporary = dict(row, id='test-' + secrets.token_hex(8), enabled=True, rotate=False)
         staged = profiles(controller, private=True) + [temporary]
         _write_profiles(controller, staged)
     try:
@@ -152,13 +166,29 @@ def resolve(rows, model):
         if not row.get('enabled', True):
             continue
         for raw in row.get('models', []):
-            if model == model_id(row, raw) or (model == 'claude-haiku-5.5:free' and raw == model):
+            ident = model_id(row, raw)
+            if model in (ident, desktop_model_id({'id': ident, 'model': raw})) or (model == 'claude-haiku-5.5:free' and raw == model):
                 return row, raw
     return None, None
 
 
 def catalog(controller):
     return catalog_rows(profiles(controller))
+
+
+def candidates(rows, model, excluded=()):
+    """Fallback only to enabled keys for the exact same model and API endpoint."""
+    selected, raw = resolve(rows, model)
+    if selected is None:
+        return []
+    compatible = [selected]
+    if selected.get('rotate', True) and not selected['id'].startswith('test-'):
+        compatible += [row for row in rows if row['id'] != selected['id'] and row.get('enabled', True)
+                       and not row['id'].startswith('test-') and row.get('rotate', True)
+                       and row.get('base_url') == selected.get('base_url')
+                       and row.get('kind', 'tokenharbor') == selected.get('kind', 'tokenharbor')
+                       and raw in row.get('models', [])]
+    return [(row, raw) for row in compatible if row['id'] not in excluded and row.get('key')]
 
 
 def catalog_rows(rows):

@@ -53,6 +53,7 @@ class AccountsTests(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import Mock
         c = Mock()
+        c.preferences = {}
         c.accounts.return_value = []
         ui = SimpleNamespace(busy=False, selected='a', items=[{'name': 'a', 'email': 'a@example.com'}],
                              controller=c, quota_cache={'a': {}}, show_notice=Mock(), loaded=Mock())
@@ -142,6 +143,19 @@ class AccountsTests(unittest.TestCase):
         self.assertNotIn('access_token', self.controller.accounts()[0])
         self.assertNotIn('refresh_token', self.controller.accounts()[0])
 
+    def test_activity_inventory_exposes_provider_identity_but_not_credentials(self):
+        self.controller.request = lambda *a: {'files': [
+            {'provider': 'antigravity', 'name': 'google', 'auth_index': 'g-1',
+             'created_at': '2026-10-10T00:00:00Z', 'access_token': 'secret'},
+            {'provider': 'codex', 'name': 'chatgpt', 'auth_index': 'c-1', 'refresh_token': 'secret'},
+            {'provider': 'xai', 'name': 'runtime', 'auth_index': 'x-1', 'runtime_only': True},
+        ]}
+        rows = self.controller.activity_inventory()
+        self.assertEqual([(row['provider'], row['name']) for row in rows],
+                         [('antigravity', 'google'), ('codex', 'chatgpt')])
+        self.assertNotIn('access_token', rows[0])
+        self.assertNotIn('refresh_token', rows[1])
+
     def test_verification_survives_status_refresh_restart_and_failed_check(self):
         del self.controller.accounts
         del self.controller._set_disabled
@@ -171,7 +185,7 @@ class AccountsTests(unittest.TestCase):
         self.assertNotIn('pending', restarted.verifications)
 
     def test_google_url_validation(self):
-        self.controller.request = lambda *a: {'url': 'https://accounts.google.com/o/oauth2/auth?state=test', 'state': 'test'}
+        self.controller.request = lambda *a: {'url': 'https://accounts.google.com/o/oauth2/auth?state=test&redirect_uri=http%3A%2F%2Flocalhost%3A51121%2Foauth-callback', 'state': 'test'}
         url, state = self.controller.begin_login()
         self.assertIn('select_account', url)
         self.assertEqual(state, 'test')

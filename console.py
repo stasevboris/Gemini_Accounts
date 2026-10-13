@@ -87,7 +87,9 @@ class Terminal:
                     last = max(state['latest'].values(), key=lambda e: e['at'], default={})
                     actual = last.get('upstream_model') or self.controller.model_aliases().get(last.get('model', 'gemini'), last.get('model', 'gemini'))
                     group = family(actual) or 'gemini'
-                rows = rank_accounts(accounts, self.caches, group)
+                rows = rank_accounts(accounts, self.caches, group,
+                                     priorities=self.controller.preferences.get('account-priorities', {}),
+                                     preferences=self.controller.preferences)
                 if rows and any(row['tier'] != 2 for row in rows):
                     self.controller.apply_reset_priority(rows)
 
@@ -186,9 +188,12 @@ class Terminal:
         if not confirm('Restore previous settings?', yes):
             print('Cancelled.')
             return False
-        count = self.integrations.restore()
-        self.controller.preferences = {'labels': {}, 'mode': 'pool', 'selected': None, 'connections-offered': True}
-        self.controller.save()
+        from quota_limits import clear_quota_limits, quota_policy_lock
+        with quota_policy_lock:
+            clear_quota_limits(self.controller)
+            count = self.integrations.restore()
+            self.controller.preferences = {'labels': {}, 'mode': 'pool', 'selected': None, 'connections-offered': True}
+            self.controller.save()
         print(f'Restored {count} configuration files. Restart running clients manually.')
         return True
 

@@ -12,6 +12,7 @@ from PySide6.QtGui import (QPainter, QColor, QPen, QBrush, QLinearGradient,
                             QFont, QFontMetrics, QPainterPath, QPixmap, QImage, QIcon)
 from PySide6.QtGui import QPalette
 from locales import tr
+from policy_widgets import ReserveBar, PriorityControl
 
 
 def ui_icon(name, color, size=18):
@@ -276,9 +277,12 @@ class AccountCard(QFrame):
         heading.setContentsMargins(0, 0, 0, 0)
         heading.setSpacing(2)
         self.heading_label = QLabel()
+        self.heading_label.setTextFormat(Qt.PlainText)
         self.heading_label.setFont(QFont('Segoe UI', 12, QFont.Bold))
         self.heading_label.setWordWrap(True)
         heading.addWidget(self.heading_label, 1)
+        self.priority_control = PriorityControl()
+        heading.addWidget(self.priority_control)
         self.remove_button = QPushButton('×')
         self.remove_button.setFixedSize(22, 22)
         self.remove_button.setProperty('class', 'danger')
@@ -292,6 +296,12 @@ class AccountCard(QFrame):
         self.status_label.setProperty('class', 'warning')
         self.status_label.hide()
         layout.addWidget(self.status_label)
+        self.uptime_label = QLabel()
+        self.uptime_label.setWordWrap(True)
+        self.uptime_label.setFont(QFont('Segoe UI', 9))
+        self.uptime_label.setProperty('class', 'muted')
+        self.uptime_label.hide()
+        layout.addWidget(self.uptime_label)
 
         self.quota_container = QWidget()
         self.quota_layout = QVBoxLayout(self.quota_container)
@@ -472,7 +482,7 @@ class QuotaRowWidget(QWidget):
         self.text_label.setFixedWidth(76)
         layout.addWidget(self.text_label)
 
-        self.bar = QuotaBar()
+        self.bar = ReserveBar()
         layout.addWidget(self.bar, 1)
 
         self.countdown = QLabel()
@@ -482,6 +492,10 @@ class QuotaRowWidget(QWidget):
         layout.addWidget(self.countdown)
 
     def update_data(self, text, remaining, countdown_text, countdown_color, quota_color):
+        signature = (text, remaining, countdown_text, countdown_color, quota_color)
+        if getattr(self, '_rendered', None) == signature:
+            return
+        self._rendered = signature
         self.text_label.setText(text)
         self.text_label.setFixedWidth(max(76, self.text_label.fontMetrics().horizontalAdvance(text) + 2))
         self.text_label.setStyleSheet(f'color: {quota_color};')
@@ -514,7 +528,7 @@ class DetailQuotaRow(QFrame):
         header_layout.addWidget(self.value_label)
         layout.addWidget(header)
 
-        self.bar = QuotaBar(large=True)
+        self.bar = ReserveBar(large=True)
         layout.addWidget(self.bar)
 
         self.reset_label = QLabel()
@@ -523,6 +537,10 @@ class DetailQuotaRow(QFrame):
         layout.addWidget(self.reset_label)
 
     def update_data(self, value_text, remaining, value_color, reset_text):
+        signature = (value_text, remaining, value_color, reset_text)
+        if getattr(self, '_rendered', None) == signature:
+            return
+        self._rendered = signature
         self.value_label.setText(value_text)
         self.value_label.setStyleSheet(f'color: {value_color};')
         self.bar.set_value(remaining)

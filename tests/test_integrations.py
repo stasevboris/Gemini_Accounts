@@ -71,11 +71,12 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.paths()['claude_desktop'][2], path)
         self.assertTrue(self.client.refresh_desktop_model_labels())
         preset = self.client.read_json(path)
-        self.assertEqual(preset['inferenceModels'][0]['labelOverride'], 'Gemini · 3.1 Pro High')
-        self.assertEqual(preset['inferenceModels'][0]['name'], 'claude-sonnet-4-5')
+        flash = next(e for e in preset['inferenceModels'] if e['labelOverride'] == 'Gemini · 3.8 Flash Low')
+        self.assertEqual(flash['name'], self.client.claude_desktop_route('gemini-3.8-flash-low'))
+        self.assertFalse(any(e['name'] == 'claude-sonnet-4-5' for e in preset['inferenceModels']))
         self.assertEqual(preset['inferenceGatewayApiKey'], 'keep-key')
-        self.assertTrue(preset['inferenceModels'][0]['supports1m'])
-        self.assertTrue(preset['inferenceModels'][0]['prefer1m'])
+        self.assertTrue(flash['supports1m'])
+        self.assertTrue(flash['prefer1m'])
         self.assertFalse(self.client.refresh_desktop_model_labels())
         self.client.restore()
         self.assertEqual(path.read_bytes(), original)
@@ -84,13 +85,16 @@ class IntegrationTests(unittest.TestCase):
         self.controller.preferences.update({'gemini-model': 'gemini-pro-agent', 'claude-model': 'claude-sonnet-4-6'})
         self.client.apply(['claude_cli', 'claude_desktop'])
         env = self.client.read_json(self.client.paths()['claude_cli'][0])['env']
-        self.assertEqual(env['ANTHROPIC_MODEL'], 'claude-sonnet-4-5[1m]')
-        self.assertEqual(env['ANTHROPIC_DEFAULT_OPUS_MODEL'], 'claude-selected')
+        self.assertEqual(env['ANTHROPIC_MODEL'], self.client.claude_desktop_route('gemini-3.8-flash-low') + '[1m]')
+        self.assertEqual(env['ANTHROPIC_DEFAULT_OPUS_MODEL'], 'claude-opus-4-6-thinking')
+        self.assertEqual(env['ANTHROPIC_DEFAULT_SONNET_MODEL'], 'claude-sonnet-4-6')
         models = self.client.read_json(self.client.paths()['claude_desktop'][2])['inferenceModels']
-        self.assertTrue(models[0]['supports1m'])
-        self.assertTrue(models[0]['prefer1m'])
-        self.assertFalse(models[1]['supports1m'])
-        self.assertFalse(models[1]['prefer1m'])
+        flash = next(e for e in models if e['labelOverride'].startswith('Gemini'))
+        sonnet = next(e for e in models if e['name'] == 'claude-sonnet-4-6')
+        self.assertTrue(flash['supports1m'])
+        self.assertTrue(flash['prefer1m'])
+        self.assertFalse(sonnet['supports1m'])
+        self.assertFalse(sonnet['prefer1m'])
 
     def test_unrelated_gateway_is_not_adopted(self):
         library = self.client.local / 'Claude-3p' / 'configLibrary'
@@ -100,6 +104,59 @@ class IntegrationTests(unittest.TestCase):
             'inferenceModels': [{'name': 'other', 'labelOverride': 'Gemini Pro'}]})
         self.assertIsNone(self.client.legacy_desktop_preset())
         self.assertFalse(self.client.refresh_desktop_model_labels())
+        self.assertFalse(self.client.enable_desktop_web_access())
+
+    def test_desktop_sites_enabled_and_explicit_host_policy_survives_reconfiguration(self):
+        self.client.apply(['claude_desktop'])
+        path = self.client.paths()['claude_desktop'][2]
+        preset = self.client.read_json(path)
+        self.assertEqual(preset['coworkEgressAllowedHosts'], ['*'])
+        preset.update(coworkEgressAllowedHosts=['github.com', '*.example.org'],
+                      disabledBuiltinTools=['Bash'], customSetting={'keep': True})
+        self.client.write_json(path, preset)
+        self.client.apply(['claude_desktop'])
+        self.client.refresh_desktop_model_labels()
+        after = self.client.read_json(path)
+        self.assertEqual(after['coworkEgressAllowedHosts'], ['github.com', '*.example.org'])
+        self.assertEqual(after['disabledBuiltinTools'], ['Bash'])
+        self.assertEqual(after['customSetting'], {'keep': True})
+        self.assertFalse(self.client.enable_desktop_web_access())
+
+    def test_web_migration_changes_only_policy_and_restores_original_bytes(self):
+        self.client.apply(['claude_desktop'])
+        path = self.client.paths()['claude_desktop'][2]
+        preset = self.client.read_json(path)
+        del preset['coworkEgressAllowedHosts']
+        self.client.write_json(path, preset)
+        self.client.backup_path.unlink()
+        original = path.read_bytes()
+        self.assertTrue(self.client.enable_desktop_web_access())
+        after = self.client.read_json(path)
+        self.assertEqual(after, {**preset, 'coworkEgressAllowedHosts': ['*']})
+        self.assertFalse(self.client.enable_desktop_web_access())
+        self.assertNotIn(b'local-test-key', self.client.backup_path.read_bytes())
+        self.client.restore()
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_empty_host_policy_remains_explicitly_disabled(self):
+        self.client.apply(['claude_desktop'])
+        path = self.client.paths()['claude_desktop'][2]
+        preset = self.client.read_json(path)
+        preset['coworkEgressAllowedHosts'] = []
+        self.client.write_json(path, preset)
+        self.client.apply(['claude_desktop'])
+        self.client.refresh_desktop_model_labels()
+        self.assertEqual(self.client.read_json(path)['coworkEgressAllowedHosts'], [])
+
+    def test_grok_models_are_discovered_from_native_provider_without_fake_quota(self):
+        self.controller.key = 'local-key'
+        self.controller.grok_model_choices = lambda: ['grok-4', 'grok-4-mini']
+        self.assertEqual(self.client.grok_model_choices(), ['grok-4', 'grok-4-mini'])
+        entries = self.client.grok_model_entries()
+        self.assertEqual([entry['name'] for entry in entries], ['grok-4', 'grok-4-mini'])
+        self.assertTrue(all(entry['labelOverride'].startswith('Grok · ') for entry in entries))
+        self.controller.grok_model_choices = lambda: (_ for _ in ()).throw(AccountError('not supported'))
+        self.assertEqual(self.client.grok_model_choices(), [])
 
     def test_installer_creates_fresh_keys_and_retains_config_on_update(self):
         payload = self.root / 'payload'

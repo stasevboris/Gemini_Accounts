@@ -209,6 +209,38 @@ def _qss(t):
     QLineEdit:focus {{
         border-color: {t['input_focus']};
     }}
+    QSpinBox, QDoubleSpinBox {{
+        background-color: {t['input_bg']};
+        color: {t['text']};
+        border: 1px solid {t['input_border']};
+        border-radius: 4px;
+        padding: 1px 3px;
+        font-size: 13px;
+    }}
+    QSpinBox:focus, QDoubleSpinBox:focus {{
+        border-color: {t['input_focus']};
+    }}
+    QSpinBox QLineEdit, QDoubleSpinBox QLineEdit {{
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        color: {t['text']};
+    }}
+
+    QTableWidget {{
+        background-color: {t['panel']};
+        color: {t['text']};
+        gridline-color: {t['border']};
+        border: 1px solid {t['border']};
+    }}
+    QHeaderView::section {{
+        background-color: {t['button']};
+        color: {t['text']};
+        border: none;
+        border-bottom: 1px solid {t['border']};
+        padding: 6px 8px;
+    }}
 
     /* ── Scroll areas ──────────────────────────────────── */
     QScrollArea {{
