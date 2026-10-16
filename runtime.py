@@ -16,7 +16,7 @@ from pathlib import Path
 
 import bcrypt
 import yaml
-from backend import AccountError, atomic_write, dpapi
+from backend import AccountError, QUEUE_PORT, atomic_write, dpapi
 
 VERSION = '1.5.3'
 UPSTREAM_VERSION = '8.0.16'
@@ -154,7 +154,7 @@ def start_services(controller):
     source = Path(__file__).resolve().parent
     tasks = [
         (native_port, '/v0/management/auth-files', [str(native_path(controller)), '-config', str(controller.proxy_dir / 'config.yaml')], 'native'),
-        (8317, '/v0/management/quota-wait', [sys.executable, '--internal-queue'] if getattr(sys, 'frozen', False)
+        (QUEUE_PORT, '/v0/management/quota-wait', [sys.executable, '--internal-queue'] if getattr(sys, 'frozen', False)
          else [sys.executable, str(source / 'quota_queue.py')], 'queue'),
     ]
     owned = []

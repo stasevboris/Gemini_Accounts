@@ -9,7 +9,7 @@ import time
 import webbrowser
 
 from activity import Activity
-from backend import AccountError, Controller
+from backend import AccountError, Controller, QUEUE_PORT
 from integrations import Integrations
 from routing import rank_accounts, reset_date
 from runtime import initialize, install_native, start_services, stop_owned
@@ -327,7 +327,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, interrupt)
     if hasattr(signal, 'SIGBREAK'):
         signal.signal(signal.SIGBREAK, interrupt)
-    print('Gemini Accounts: http://127.0.0.1:8317 — press Ctrl+C to exit.')
+    print(f'Gemini Accounts: http://127.0.0.1:{QUEUE_PORT} — press Ctrl+C to exit.')
     try:
         if command == 'serve':
             while not terminal.stop.wait(1):

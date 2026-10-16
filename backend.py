@@ -34,6 +34,10 @@ def atomic_write(path, data):
     os.replace(temp, path)
 
 
+# The quota queue listens here; a server can run several independent pools side by side.
+QUEUE_PORT = int(os.environ.get('GEMINI_QUEUE_PORT', '8317'))
+
+
 def storage_root():
     if os.environ.get('GEMINI_ACCOUNTS_HOME'):
         return Path(os.environ['GEMINI_ACCOUNTS_HOME']).expanduser().resolve()
@@ -96,7 +100,7 @@ class Controller:
         except (OSError, ValueError):
             self.preferences = {'labels': {}, 'mode': 'pool', 'selected': None}
         self.key = None
-        self.base = 'http://127.0.0.1:8317'
+        self.base = f'http://127.0.0.1:{QUEUE_PORT}'
         self.verification_lock = threading.RLock()
         self.verification_checks = {}
         self.verification_path = self.data_dir / 'verification-state.dpapi'
@@ -178,7 +182,7 @@ class Controller:
             start_services(self)
 
     def quota_wait_status(self):
-        request = urllib.request.Request('http://127.0.0.1:8317/v0/management/quota-wait',
+        request = urllib.request.Request(f'http://127.0.0.1:{QUEUE_PORT}/v0/management/quota-wait',
             headers={'Authorization': 'Bearer ' + (self.key or '')})
         try:
             with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=3) as response:
@@ -187,7 +191,7 @@ class Controller:
             return {'jobs': []}
 
     def api_key_status(self):
-        request = urllib.request.Request('http://127.0.0.1:8317/v0/management/api-key-stats',
+        request = urllib.request.Request(f'http://127.0.0.1:{QUEUE_PORT}/v0/management/api-key-stats',
             headers={'Authorization': 'Bearer ' + (self.key or '')})
         try:
             with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=3) as response:

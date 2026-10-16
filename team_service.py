@@ -9,7 +9,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-from backend import AccountError, Controller, atomic_write, dpapi
+from backend import AccountError, Controller, QUEUE_PORT, atomic_write, dpapi
 from agent_team import TeamRun, validate
 from agent_routes import team_active
 
@@ -165,7 +165,7 @@ class TeamClient:
     def request(self, endpoint, payload=None):
         c = self.controller
         key = c.key or dpapi((c.data_dir / 'management-key.dpapi').read_bytes(), decrypt=True).decode()
-        request = urllib.request.Request('http://127.0.0.1:8317/v0/management/team/' + endpoint,
+        request = urllib.request.Request(f'http://127.0.0.1:{QUEUE_PORT}/v0/management/team/' + endpoint,
             data=json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None,
             headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
         try:

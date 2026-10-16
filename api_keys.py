@@ -178,7 +178,8 @@ def verify_profile(controller, row):
     except OSError:
         raise AccountError('The local gateway is not installed.') from None
     with temporary_profile(controller, row) as temporary:
-        _probe_message('http://127.0.0.1:8317/v1/messages', model_id(temporary, row['models'][0]),
+        from backend import QUEUE_PORT
+        _probe_message(f'http://127.0.0.1:{QUEUE_PORT}/v1/messages', model_id(temporary, row['models'][0]),
                        {'Authorization': 'Bearer ' + local_key}, 'Local gateway')
     return {'provider': True, 'gateway': True, 'model': row['models'][0]}
 

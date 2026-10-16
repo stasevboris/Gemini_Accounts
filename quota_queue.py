@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from backend import Controller, dpapi, AccountError
+from backend import Controller, QUEUE_PORT, dpapi, AccountError
 from agent_routes import route_scope, team_active
 import yaml
 from model_context import strip_context_suffix
@@ -896,7 +896,7 @@ def main():
     key = dpapi((controller.data_dir / 'management-key.dpapi').read_bytes(), decrypt=True).decode()
     aliases = gateway_aliases(config.get('oauth', {}).get('model-alias', {}))
     keys = config.get('access', {}).get('api-keys', [])
-    server = QueueServer(('127.0.0.1', 8317), ('127.0.0.1', config['server']['port']), key, keys, aliases)
+    server = QueueServer(('127.0.0.1', QUEUE_PORT), ('127.0.0.1', config['server']['port']), key, keys, aliases)
     server.diagnostics = Diagnostics(controller.data_dir / 'gateway-diagnostics.jsonl')
     server.diagnostics.record('service', 'started', phase='ready')
     server.verifications_path = controller.verification_path

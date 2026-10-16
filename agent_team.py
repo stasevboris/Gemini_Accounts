@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from backend import AccountError, atomic_write, dpapi
+from backend import AccountError, QUEUE_PORT, atomic_write, dpapi
 from agent_routes import AccountRoutes
 from agent_tools import TeamTools
 from account_status import safe_detail
@@ -147,7 +147,7 @@ class LocalTransport:
         if tools:
             body['tools'] = tools
         key = (self.controller.proxy_dir / 'client-key.txt').read_text().strip()
-        conn = http.client.HTTPConnection('127.0.0.1', 8317, timeout=10)
+        conn = http.client.HTTPConnection('127.0.0.1', QUEUE_PORT, timeout=10)
         with self.lock:
             self.connections.add(conn)
         try:
