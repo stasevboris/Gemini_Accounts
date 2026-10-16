@@ -16,6 +16,8 @@ activity.json
 quota-starts.json
 account-uptime.json
 token-capacity.json
+team-runs/
+team-run.lock
 api-key-stats.json
 gateway-diagnostics*.jsonl
 provider-diagnostics*.jsonl

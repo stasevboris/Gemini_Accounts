@@ -10,6 +10,36 @@ from tokenharbor import save_key, MODEL
 
 
 class ApiKeyTests(unittest.TestCase):
+    def test_rate_limit_is_not_reported_as_token_exhaustion(self):
+        self.assertEqual(api_keys.failure_state(429, b'{"error":{"message":"Too many requests in progress: up to 5 at once"}}'), 'rate_limited')
+        self.assertEqual(api_keys.failure_state(429, b'{"error":{"code":"insufficient_quota"}}'), 'exhausted')
+        self.assertEqual(api_keys.failure_state(403, b'{"error":{"message":"credit balance is too low"}}'), 'exhausted')
+        self.assertEqual(api_keys.failure_state(403), 'rejected')
+
+    def test_health_survives_restart_expires_and_resets_on_key_change(self):
+        import time
+        rows = [dict(self.profile(), id=ident) for ident in ('one', 'two')]
+        stats = api_keys.Stats(self.root / 'health.json')
+        stats.record('one', MODEL, 402, api_keys.Usage(), 1, profile=rows[0])
+        health = api_keys.Stats(self.root / 'health.json').snapshot()
+        route = api_keys.model_id(rows[0], MODEL)
+        self.assertEqual([p['id'] for p, _ in api_keys.candidates(rows, route, health=health)], ['two'])
+        self.assertEqual(len(api_keys.candidates(rows, route, health=health, now=time.time()+301)), 2)
+        rows[0]['key'] = 'replacement-key'
+        self.assertEqual(len(api_keys.candidates(rows, route, health=health)), 2)
+        stats.record('one', MODEL, 200, api_keys.Usage(), 1, profile=rows[0])
+        self.assertFalse(stats.snapshot()['one']['exhausted'])
+        self.assertFalse(stats.snapshot()['one']['cooldowns'])
+
+    def test_rate_limit_cooldown_is_scoped_to_model(self):
+        row = dict(self.profile(), id='one', models=[MODEL, 'another-model'])
+        stats = api_keys.Stats()
+        stats.record('one', MODEL, 429, api_keys.Usage(), 1, profile=row)
+        health = stats.snapshot()
+        self.assertFalse(health['one']['exhausted'])
+        self.assertEqual(api_keys.candidates([row], api_keys.model_id(row, MODEL), health=health), [])
+        self.assertTrue(api_keys.candidates([row], api_keys.model_id(row, 'another-model'), health=health))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

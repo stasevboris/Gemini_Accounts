@@ -20,6 +20,8 @@ try {
 if ($LASTEXITCODE -ne 0) {throw 'Manager build failed'}
 & $Python -m PyInstaller --noconfirm --onefile --windowed --name GeminiQuotaQueue --collect-all tzdata --add-data ($modelCatalog+';assets') --distpath $payload --workpath (Join-Path $build 'queue') --specpath $build quota_queue.py
 if ($LASTEXITCODE -ne 0) {throw 'Queue build failed'}
+& $Python -m PyInstaller --noconfirm --onefile --name GeminiTeamMCP --distpath $payload --workpath (Join-Path $build 'team-mcp') --specpath $build team_mcp.py
+if ($LASTEXITCODE -ne 0) {throw 'Team MCP build failed'}
 & $Python -m PyInstaller --noconfirm --onefile --name GeminiAccounts-CLI --collect-all tzdata --add-data ($modelCatalog+';assets') --distpath dist --workpath (Join-Path $build 'console') --specpath $build console.py
 if ($LASTEXITCODE -ne 0) {throw 'Terminal build failed'}
 Compress-Archive -LiteralPath 'dist/GeminiAccounts-CLI.exe','CLI.md','LICENSE','THIRD_PARTY.md' -DestinationPath 'dist/GeminiAccounts-CLI-windows-x64.zip' -Force

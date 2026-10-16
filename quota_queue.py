@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from backend import Controller, dpapi
+from backend import Controller, dpapi, AccountError
+from agent_routes import route_scope, team_active
 import yaml
 from model_context import strip_context_suffix
 from response_guard import StreamProbe, usable_message
@@ -19,6 +20,8 @@ from provider_errors import failure_reason, provider_error_metadata
 import tokenharbor
 import api_keys
 from claude_auth import is_desktop_model as is_claude_subscription
+from grok_auth import is_desktop_model as is_grok_subscription
+from kimi_auth import is_desktop_model as is_kimi_subscription
 from desktop_web import SEARCH_HELPERS, desktop_search_request, google_search_models, needs_search_helper
 
 PING = b'event: ping\ndata: {"type":"ping"}\n\n'
@@ -67,6 +70,44 @@ def normalize_sdk_system(request):
     return changed
 
 
+def normalize_thinking_history(request):
+    """Remove only trailing thinking blocks from replayed Anthropic turns.
+
+    Anthropic accepts thinking blocks inside an assistant turn, but a turn sent
+    back as history cannot end in ``thinking``. Preserve text, tool calls and
+    user content; drop a malformed thinking-only assistant turn instead of
+    inventing assistant output.
+    """
+    messages = request.get('messages')
+    if not isinstance(messages, list):
+        return False
+    changed = False
+    cleaned = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get('role') != 'assistant':
+            cleaned.append(message)
+            continue
+        content = message.get('content')
+        if not isinstance(content, list):
+            cleaned.append(message)
+            continue
+        blocks = list(content)
+        while blocks and isinstance(blocks[-1], dict) and blocks[-1].get('type') in ('thinking', 'redacted_thinking'):
+            blocks.pop()
+            changed = True
+        if blocks:
+            if len(blocks) != len(content):
+                message = {**message, 'content': blocks}
+            cleaned.append(message)
+        elif content:
+            changed = True
+        else:
+            cleaned.append(message)
+    if changed:
+        request['messages'] = cleaned
+    return changed
+
+
 def deadline(item):
     try:
         return datetime.fromisoformat(item['retry_at'].replace('Z', '+00:00')).timestamp()
@@ -80,6 +121,11 @@ def gateway_aliases(channels):
     # the client alias in inference requests; replacing it would mix providers.
     aliases.update({a['alias']: 'claude-oauth/' + a['name'] for a in channels.get('claude', [])
                     if is_claude_subscription(a.get('alias'))})
+    aliases.update({a['alias']: a['name'] for a in channels.get('xai', [])
+                    if is_grok_subscription(a.get('alias'))})
+    for provider in ('kimi', 'kimi-ai'):
+        aliases.update({a['alias']: provider + '/' + a['name'] for a in channels.get(provider, [])
+                        if is_kimi_subscription(a.get('alias'))})
     return aliases
 
 
@@ -87,6 +133,11 @@ def quota_wait(files, model, aliases, now=None):
     """Wait only for actual quota blocks, scoped to the requested upstream model."""
     now = time.time() if now is None else now
     model = strip_context_suffix(model)
+    scope = route_scope(model)
+    if scope:
+        files = [a for a in files if a.get('name') == scope['name'] and
+                 a.get('provider', a.get('type')) == scope['provider']]
+        model = scope['model']
     model = aliases.get(model, model)
     if api_keys.is_model(model):
         # Google credential cooldowns have no bearing on this independent API.
@@ -94,8 +145,14 @@ def quota_wait(files, model, aliases, now=None):
     quota = []
     provider = ('claude' if model.startswith('claude-oauth/') or is_claude_subscription(model)
                 else 'codex' if model.startswith('gpt-')
-                else 'xai' if model.startswith('grok-') else 'antigravity')
+                else 'xai' if model.startswith('grok-') or is_grok_subscription(model)
+                else 'kimi-ai' if model.startswith('kimi-ai/')
+                else 'kimi' if model.startswith(('kimi-', 'kimi/')) else 'antigravity')
+    if scope:
+        provider = scope['provider']
     if model.startswith('claude-oauth/'):
+        model = model.split('/', 1)[1]
+    if model.startswith(('kimi/', 'kimi-ai/')):
         model = model.split('/', 1)[1]
     enabled = [a for a in files if not a.get('disabled') and
                a.get('provider', a.get('type')) == provider]
@@ -143,6 +200,7 @@ class QueueServer(ThreadingHTTPServer):
         self.api_profiles = lambda: []
         self.api_stats = api_keys.Stats()
         self.google_search_models = google_search_models()
+        self.team_service = None
 
     def search_helper_model(self, exclude=()):
         """Select a supported search model currently published by the native service."""
@@ -201,7 +259,7 @@ class QueueServer(ThreadingHTTPServer):
 
     def snapshot(self):
         with self.lock:
-            return {'jobs': [dict(j, upstream_model=self.aliases.get(j['model'], j['model'])) for j in self.jobs.values()], 'poll_seconds': self.poll_seconds, 'diagnostics_enabled': True, 'log_write_error': self.diagnostics.write_error}
+            return {'jobs': [dict(j, upstream_model=self.aliases.get(j['model'], j['model'])) for j in self.jobs.values()], 'poll_seconds': self.poll_seconds, 'diagnostics_enabled': True, 'log_write_error': self.diagnostics.write_error, 'updating': self.updating}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -284,11 +342,18 @@ class Handler(BaseHTTPRequestHandler):
         self.trace_started = time.monotonic()
         self.response_bytes = 0
         self.api_profile = None
+        self.api_profile_row = None
+        self.api_failure = ''
+        self.api_retry_after = None
         self.api_usage = api_keys.Usage()
         self.api_status = 502
         self.api_complete = False
         self.keepalive = PING if self.path.split('?')[0] == '/v1/messages' else b': keep-alive\n\n'
         tokens = [self.headers.get('x-api-key', ''), self.headers.get('Authorization', '').removeprefix('Bearer ')]
+        if self.path.split('?')[0].startswith('/v0/management/team/'):
+            from team_gateway import management
+            management(self, tokens)
+            return
         if self.path in ('/v0/management/quota-wait', '/v0/management/diagnostics', '/v0/management/update-lock', '/v0/management/api-key-stats'):
             if not any(secrets.compare_digest(token.encode(), self.server.key.encode()) for token in tokens):
                 self.json_reply(401, {'error': {'type': 'authentication_error', 'message': 'Unauthorized'}})
@@ -303,7 +368,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.json_reply(200, {'locked':False})
                     return
                 with self.server.lock:
-                    if self.server.jobs:
+                    if self.server.jobs or team_active():
                         self.json_reply(409, {'error':'Requests are running'})
                         return
                     self.server.updating = True
@@ -328,11 +393,17 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == 'POST' and self.path.split('?')[0] == '/v1/messages/count_tokens':
                 try:
                     request = json.loads(body)
-                    if normalize_sdk_system(request):
-                        self.trace('sdk_identity_removed')
+                    changed = normalize_sdk_system(request)
+                    changed = normalize_thinking_history(request) or changed
+                    if changed:
+                        self.trace('history_normalized')
                         body = json.dumps(request, ensure_ascii=False).encode()
                     raw_model = request.get('model')
                     normalized = strip_context_suffix(raw_model)
+                    from team_service import TEAM_MODEL
+                    if normalized == TEAM_MODEL and any(secrets.compare_digest(token.encode(), key.encode()) for token in tokens for key in self.server.client_keys):
+                        self.json_reply(200, {'input_tokens': max(1, len(json.dumps(request.get('messages', []))) // 4)})
+                        return
                     if isinstance(normalized, str):
                         self.trace('token_count_requested', model=normalized, requested_model=raw_model)
                         request['model'] = normalized
@@ -350,9 +421,12 @@ class Handler(BaseHTTPRequestHandler):
             model = request['model']
             if not isinstance(model, str):
                 raise ValueError()
-            if self.path.split('?')[0] == '/v1/messages' and normalize_sdk_system(request):
-                self.trace('sdk_identity_removed')
-                body = json.dumps(request, ensure_ascii=False).encode()
+            if self.path.split('?')[0] == '/v1/messages':
+                changed = normalize_sdk_system(request)
+                changed = normalize_thinking_history(request) or changed
+                if changed:
+                    self.trace('history_normalized')
+                    body = json.dumps(request, ensure_ascii=False).encode()
             requested_model = model
             normalized = strip_context_suffix(model)
             if normalized != model:
@@ -378,6 +452,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.server.jobs[ident] = {'model': model, 'state': 'running', 'since': time.time(), 'retry_at': None}
         try:
+            from team_service import TEAM_MODEL
+            if model == TEAM_MODEL and not (guarded and desktop_search_request(request)):
+                from team_gateway import serve_model
+                serve_model(self, request)
+                return
             self.desktop_search = guarded and desktop_search_request(request)
             search_attempted = set()
             if guarded:
@@ -428,9 +507,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.jobs[ident].update(state='running', retry_at=None)
                 attempt += 1
                 actual_model = self.server.aliases.get(model, model)
+                team_scope = route_scope(model)
                 external = api_keys.is_model(actual_model)
                 self.trace('upstream_started', attempt=attempt, model=model, upstream_model=actual_model,
-                           provider='api' if external else 'claude' if actual_model.startswith('claude-oauth/') else 'codex' if actual_model.startswith('gpt-') else 'antigravity')
+                           provider=team_scope['provider'] if team_scope else 'api' if external else 'claude' if actual_model.startswith('claude-oauth/') else 'codex' if actual_model.startswith('gpt-') else 'xai' if actual_model.startswith('grok-') else 'kimi-ai' if actual_model.startswith('kimi-ai/') else 'kimi' if actual_model.startswith(('kimi-', 'kimi/')) else 'antigravity')
                 try:
                     conn, response = self.await_upstream(lambda: self.open_upstream(body, model=model), stream,
                                                          cleanup=lambda result: result[0].close())
@@ -446,10 +526,22 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if external and response.status >= 400:
                         error = response.read()
+                        self.api_failure = api_keys.failure_state(response.status, error)
+                        try:
+                            self.api_retry_after = float(response.getheader('Retry-After') or 0)
+                        except (ValueError, TypeError):
+                            self.api_retry_after = None
                         self.trace('provider_rejected', status=response.status, provider='api', reason='API provider rejected request')
-                        if response.status in (401, 402, 403, 429, 500, 502, 503, 504) and self.api_fallback_available(actual_model):
+                        if (self.api_failure == 'exhausted' or response.status in (401, 402, 403, 429, 500, 502, 503, 504)) and self.api_fallback_available(actual_model):
                             self.trace('api_key_fallback', status=response.status)
                             continue
+                        if self.api_failure == 'exhausted':
+                            # Make the terminal response actionable instead of
+                            # exposing only a provider-specific one-liner.
+                            self.trace('api_tokens_exhausted', status=response.status,
+                                       reason='No compatible API key remains with usable quota.')
+                            error = json.dumps({'type': 'error', 'error': {'type': 'insufficient_quota',
+                                'message': 'API key tokens or quota are exhausted; no compatible key is currently available. Add another key or replenish the provider balance.'}}).encode()
                         self.deliver(response, error, started, stream)
                         self.api_complete = True
                         return
@@ -463,7 +555,7 @@ class Handler(BaseHTTPRequestHandler):
                         except (OSError, ValueError, http.client.HTTPException):
                             reset = None
                         if response.status == 429:
-                            if actual_model.startswith('gpt-') and not reset:
+                            if (team_scope['model'] if team_scope else actual_model).startswith('gpt-') and not reset:
                                 self.deliver(response, error, started, stream)
                                 return
                             rate_retries += 1
@@ -530,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     conn.close()
                     self.record_api_attempt()
-        except ProviderConfigurationError as error:
+        except (ProviderConfigurationError, AccountError) as error:
             self.trace('provider_configuration_error', status=503, provider='api')
             self.provider_configuration_error(str(error), stream)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError) as error:
@@ -556,19 +648,26 @@ class Handler(BaseHTTPRequestHandler):
     def open_upstream(self, body, model=None):
         actual = self.server.aliases.get(strip_context_suffix(model), strip_context_suffix(model))
         if api_keys.is_model(actual):
-            choices = api_keys.candidates(self.server.api_profiles(), actual, getattr(self, 'api_attempted', set()))
+            rows = self.server.api_profiles()
+            choices = api_keys.candidates(rows, actual, getattr(self, 'api_attempted', set()),
+                                          health=self.server.api_stats.snapshot())
             profile, raw = choices[0] if choices else (None, None)
             # Accept the old direct model ID during migration, without aliasing Google models.
-            if profile is None and tokenharbor.is_model(actual) and self.server.tokenharbor_key():
+            if profile is None and not rows and tokenharbor.is_model(actual) and self.server.tokenharbor_key():
                 profile = {'id': 'tokenharbor', 'kind': 'tokenharbor', 'base_url': 'https://' + tokenharbor.HOST,
                            'key': self.server.tokenharbor_key()}
                 raw = actual
             if profile is None or not profile.get('key'):
+                if api_keys.candidates(rows, actual):
+                    raise ProviderConfigurationError('All compatible API keys are temporarily unavailable (quota, authentication or request limit). See API keys for the reason and retry time.')
                 raise ProviderConfigurationError('API key is missing or disabled. Add it in the API keys tab (TokenHarbor API key).')
             if not hasattr(self, 'api_attempted'):
                 self.api_attempted = set()
             self.api_attempted.add(profile['id'])
             self.api_profile = profile['id']
+            self.api_profile_row = profile
+            self.api_failure = ''
+            self.api_retry_after = None
             self.api_model = raw
             self.api_usage = api_keys.Usage()
             self.api_status = 502
@@ -579,8 +678,12 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(request, ensure_ascii=False).encode()
             # Preserve the client's protocol: Anthropic messages and SSE must
             # remain Anthropic, while OpenAI requests keep their own endpoint.
-            headers = {k: v for k, v in self.headers.items()
-                       if k.lower() not in HOP | {'authorization', 'x-api-key', 'cookie', 'x-goog-api-key'}}
+            # Header names are case-insensitive. urllib sends "Content-type";
+            # retaining it alongside a new "Content-Type" makes some providers
+            # reject a valid JSON body because they see two media types.
+            headers = {k.lower(): v for k, v in self.headers.items()
+                       if k.lower() not in HOP | {'authorization', 'x-api-key', 'cookie', 'x-goog-api-key', 'user-agent', 'content-type'}}
+            headers['User-Agent'] = api_keys.request_headers()['User-Agent']
             if profile.get('kind') == 'anthropic':
                 headers['x-api-key'] = profile['key']
                 headers.setdefault('anthropic-version', '2023-06-01')
@@ -610,7 +713,8 @@ class Handler(BaseHTTPRequestHandler):
             raise
 
     def api_fallback_available(self, model):
-        return bool(api_keys.candidates(self.server.api_profiles(), model, self.api_attempted))
+        return bool(api_keys.candidates(self.server.api_profiles(), model, self.api_attempted,
+                                       health=self.server.api_stats.snapshot()))
 
     def deliver_validated(self, response, stream):
         """Retry only before any assistant content or tool call reaches the client."""
@@ -760,7 +864,8 @@ class Handler(BaseHTTPRequestHandler):
             if status == 200 and not self.api_complete:
                 status = 499
             self.server.api_stats.record(self.api_profile, self.api_model, status, self.api_usage,
-                                         time.monotonic() - self.api_started)
+                                         time.monotonic() - self.api_started, failure=self.api_failure or self.api_usage.failure,
+                                         retry_after=self.api_retry_after, profile=self.api_profile_row)
         self.api_profile = None
 
     def model_catalog(self):
@@ -775,8 +880,13 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             conn.close()
+        models = [entry for entry in models if entry.get('owned_by') not in ('xai', 'grok', 'kimi', 'kimi-ai')
+                  and not str(entry.get('id', '')).startswith(('grok-', 'kimi-', 'kimi/', 'kimi-ai/'))
+                  and not is_grok_subscription(entry.get('id')) and not is_kimi_subscription(entry.get('id'))]
         models.extend({'id': entry['id'], 'object': 'model', 'owned_by': 'api', 'display_name': entry['label']}
                       for entry in api_keys.catalog_rows(self.server.api_profiles()))
+        from team_service import TEAM_MODEL
+        models.append({'id': TEAM_MODEL, 'object': 'model', 'owned_by': 'gemini-accounts', 'display_name': 'Agent team / Команда агентов'})
         self.json_reply(200, {'object': 'list', 'data': models})
 
 

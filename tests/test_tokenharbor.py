@@ -105,6 +105,7 @@ class TokenHarborTests(unittest.TestCase):
         self.assertNotIn('x-api-key', folded)
         self.assertNotIn('cookie', folded)
         self.assertEqual(folded['anthropic-version'], '2023-06-01')
+        self.assertTrue(folded['user-agent'].startswith('GeminiAccounts/'))
         self.connection.assert_called_with(HOST, timeout=60)
         self.assertNotIn('/v0/management/auth-files', self.native.requests)
 
@@ -115,6 +116,20 @@ class TokenHarborTests(unittest.TestCase):
         self.assertIn(b'"text":"OK"', data)
         self.assertIn(b'event: message_stop', data)
         self.assertEqual(len(self.provider.requests), 1)
+
+    def test_urllib_header_casing_does_not_duplicate_json_media_type(self):
+        payload = {'model': 'claude-selected', 'max_tokens': 16, 'messages': [{'role': 'user', 'content': 'OK'}]}
+        self.client.request('POST', '/v1/messages', json.dumps(payload),
+                            {'X-Api-Key': 'client', 'Content-type': 'application/json',
+                             'Anthropic-Version': '2023-06-01', 'User-agent': 'Python-urllib/3.12'})
+        response = self.client.getresponse()
+        response.read()
+        self.assertEqual(response.status, 200)
+        headers = self.provider.requests[-1][1]
+        self.assertEqual(sum(k.lower() == 'content-type' for k in headers), 1)
+        self.assertEqual(sum(k.lower() == 'anthropic-version' for k in headers), 1)
+        self.assertEqual(next(v for k, v in headers.items() if k.lower() == 'content-type'), 'application/json')
+        self.assertTrue(next(v for k, v in headers.items() if k.lower() == 'user-agent').startswith('GeminiAccounts/'))
 
     def test_google_credential_cooldown_does_not_block_tokenharbor(self):
         files = [{'provider': 'antigravity', 'name': 'blocked', 'cooldowns': [{
@@ -201,7 +216,8 @@ class TokenHarborTests(unittest.TestCase):
         response = self.client.getresponse()
         data = response.read()
         self.assertEqual(response.status, 200)
-        self.assertEqual({m['id'] for m in json.loads(data)['data']}, {'gemini-pro-agent', api_keys.model_id(row, MODEL)})
+        from team_service import TEAM_MODEL
+        self.assertEqual({m['id'] for m in json.loads(data)['data']}, {'gemini-pro-agent', api_keys.model_id(row, MODEL), TEAM_MODEL})
         self.assertNotIn(row['key'].encode(), data)
         self.client.request('GET', '/v0/management/api-key-stats', headers={'Authorization': 'Bearer client'})
         response = self.client.getresponse()
@@ -257,10 +273,42 @@ class TokenHarborTests(unittest.TestCase):
         for other in (dict(row, id='two', base_url='https://other.example'),
                       dict(row, id='two', models=['different-model']),
                       dict(row, id='two', enabled=False), dict(row, id='two', rotate=False)):
+            deadline = time.monotonic() + 1
+            while self.gate.snapshot()['jobs'] and time.monotonic() < deadline: time.sleep(.01)
+            self.gate.api_stats = api_keys.Stats()
             self.gate.api_profiles = lambda: [row, other]
             before = len(self.provider.requests)
             self.assertEqual(self.post(model=api_keys.model_id(row, MODEL))[0], 429)
             self.assertEqual(len(self.provider.requests), before + 1)
+
+    def test_next_request_skips_depleted_key_and_uses_working_key(self):
+        import api_keys
+        rows = [{'id': ident, 'label': ident, 'key': 'secret-' + ident, 'kind': 'tokenharbor',
+                 'base_url': 'https://tokenharbor.ai', 'models': [MODEL]} for ident in ('one', 'two')]
+        self.gate.api_profiles = lambda: rows
+        self.provider.status_by_key = {'Bearer secret-one': 402}
+        for _ in range(2):
+            self.assertEqual(self.post(model=api_keys.model_id(rows[0], MODEL))[0], 200)
+            deadline = time.monotonic() + 1
+            while self.gate.snapshot()['jobs'] and time.monotonic() < deadline: time.sleep(.01)
+        self.assertEqual([r[1]['Authorization'] for r in self.provider.requests],
+                         ['Bearer secret-one', 'Bearer secret-two', 'Bearer secret-two'])
+
+    def test_terminal_quota_and_rate_errors_are_distinct(self):
+        import api_keys
+        row = {'id': 'one', 'key': 'secret-one', 'base_url': 'https://tokenharbor.ai', 'models': [MODEL]}
+        self.gate.api_profiles = lambda: [row]
+        self.provider.status = 402
+        status, data, _ = self.post(model=api_keys.model_id(row, MODEL))
+        self.assertEqual(status, 402)
+        self.assertIn(b'tokens or quota are exhausted', data)
+        deadline = time.monotonic() + 1
+        while self.gate.snapshot()['jobs'] and time.monotonic() < deadline: time.sleep(.01)
+        self.gate.api_stats = api_keys.Stats()
+        self.provider.status = 429
+        status, data, _ = self.post(model=api_keys.model_id(row, MODEL))
+        self.assertEqual(status, 429)
+        self.assertNotIn(b'tokens or quota are exhausted', data)
 
     def test_api_pool_exhaustion_returns_error_without_duplicate_response(self):
         import api_keys

@@ -1,5 +1,6 @@
 """Independent API profiles, encrypted credentials and metadata-only usage."""
 import json
+import copy
 import hashlib
 import re
 import secrets
@@ -12,6 +13,27 @@ from contextlib import contextmanager
 
 _PROFILE_LOCK = threading.RLock()
 from datetime import datetime, timezone
+
+
+def request_headers():
+    from runtime import VERSION
+    # Some API frontends reject urllib's default User-Agent before authentication.
+    return {'User-Agent': 'GeminiAccounts/' + VERSION, 'Accept': 'application/json'}
+
+
+def profile_key(controller, row):
+    """Reuse a saved credential only for the same API origin."""
+    from backend import AccountError
+    if row.get('key'):
+        return row['key']
+    old = next((r for r in profiles(controller, private=True) if r['id'] == row.get('id')), {})
+    if old.get('key'):
+        def origin(value):
+            url = urllib.parse.urlsplit(value)
+            return url.scheme.lower(), (url.hostname or '').lower(), url.port or 443
+        if origin(old.get('base_url', '')) != origin(row.get('base_url', '').strip()):
+            raise AccountError('Enter the API key again when changing the API server.')
+    return old.get('key')
 
 
 def model_id(profile, model):
@@ -56,7 +78,7 @@ def validated_profile(controller, row):
     rows = profiles(controller, private=True)
     old = next((r for r in rows if r['id'] == row.get('id')), {})
     row['id'] = old.get('id') or secrets.token_hex(6)
-    row['key'] = row.get('key') or old.get('key')
+    row['key'] = profile_key(controller, row)
     url = urllib.parse.urlsplit(row.get('base_url', '').strip().rstrip('/'))
     if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise AccountError('API base URL must be an HTTPS address without credentials or query parameters.')
@@ -122,7 +144,7 @@ def _probe_message(url, model, headers, stage):
     from response_guard import usable_message
     request = urllib.request.Request(url, data=json.dumps({'model': model, 'max_tokens': 16,
         'stream': False, 'messages': [{'role': 'user', 'content': 'Reply only OK.'}]}).encode(),
-        headers={**headers, 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'})
+        headers={**request_headers(), **headers, 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'})
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=20) as response:
             chunks, deadline, size = [], time.monotonic() + 20, 0
@@ -176,7 +198,32 @@ def catalog(controller):
     return catalog_rows(profiles(controller))
 
 
-def candidates(rows, model, excluded=()):
+def credential_tag(row):
+    """Invalidate stale cooldowns after a credential or endpoint is edited."""
+    return hashlib.sha256(json.dumps([row.get('key'), row.get('base_url'), row.get('kind')]).encode()).hexdigest()[:24]
+
+
+def failure_state(status, body=b''):
+    """Do not confuse request concurrency/rate limits with depleted credits."""
+    from provider_errors import unpack_error
+    error = unpack_error(body)
+    detail = str(error.get('message', '')).lower()
+    code = str(error.get('code') or error.get('type') or '').lower()
+    if status == 402 or any(word in code + ' ' + detail for word in (
+            'insufficient_quota', 'insufficient_balance', 'credit balance is too low',
+            'insufficient credits', 'quota exhausted', 'quota_exhausted', 'tokens exhausted',
+            'billing_hard_limit', 'out of credits', 'balance exhausted')):
+        return 'exhausted'
+    if status == 429:
+        return 'rate_limited'
+    if status in (401, 403):
+        return 'rejected'
+    if status in (500, 502, 503, 504):
+        return 'unavailable'
+    return ''
+
+
+def candidates(rows, model, excluded=(), health=None, now=None):
     """Fallback only to enabled keys for the exact same model and API endpoint."""
     selected, raw = resolve(rows, model)
     if selected is None:
@@ -188,7 +235,14 @@ def candidates(rows, model, excluded=()):
                        and row.get('base_url') == selected.get('base_url')
                        and row.get('kind', 'tokenharbor') == selected.get('kind', 'tokenharbor')
                        and raw in row.get('models', [])]
-    return [(row, raw) for row in compatible if row['id'] not in excluded and row.get('key')]
+    result = [(row, raw) for row in compatible if row['id'] not in excluded and row.get('key')]
+    if health is not None:
+        now = time.time() if now is None else now
+        result = [(row, raw) for row, raw in result if row['id'].startswith('test-') or not any(
+            block.get('credential_tag') == credential_tag(row) and block.get('retry_at', 0) > now
+            for block in health.get(row['id'], {}).get('cooldowns', {}).values()
+            if block.get('scope') == 'credential' or block.get('model') == raw)]
+    return result
 
 
 def catalog_rows(rows):
@@ -199,7 +253,7 @@ def catalog_rows(rows):
 
 
 def fetch_models(row):
-    headers = {'Accept': 'application/json', 'anthropic-version': '2023-06-01'}
+    headers = {**request_headers(), 'anthropic-version': '2023-06-01'}
     headers['x-api-key' if row.get('kind') == 'anthropic' else 'Authorization'] = row['key'] if row.get('kind') == 'anthropic' else 'Bearer ' + row['key']
     request = urllib.request.Request(row['base_url'].rstrip('/').removesuffix('/v1') + '/v1/models', headers=headers)
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=15) as response:
@@ -212,11 +266,14 @@ class Usage:
         self.input = self.output = 0
         self.buffer = b''
         self.failed = False
+        self.failure = ''
 
     def json(self, value):
         if not isinstance(value, dict):
             return
         self.failed = self.failed or value.get('type') == 'error' or bool(value.get('error'))
+        if value.get('type') == 'error' or value.get('error'):
+            self.failure = failure_state(400, value) or self.failure
         for item in (value, value.get('message', {}), value.get('response', {})):
             if not isinstance(item, dict):
                 continue
@@ -250,7 +307,7 @@ class Stats:
         except (OSError, ValueError):
             self.rows = {}
 
-    def record(self, ident, model, status, usage, latency):
+    def record(self, ident, model, status, usage, latency, *, failure='', retry_after=None, profile=None):
         from backend import atomic_write
         with self.lock:
             row = self.rows.setdefault(ident, {'success': 0, 'failed': 0, 'input_tokens': 0, 'output_tokens': 0, 'latency_ms': 0})
@@ -259,6 +316,22 @@ class Stats:
             row['output_tokens'] += usage.output
             row['latency_ms'] += round(latency * 1000)
             row.update(last_at=datetime.now(timezone.utc).isoformat(), last_model=model, last_status=status)
+            failure = failure or failure_state(status)
+            row.update(exhausted=failure == 'exhausted', unavailable=failure in ('unavailable', 'rejected'),
+                       failure=failure)
+            if profile:
+                blocks = row.setdefault('cooldowns', {})
+                if status == 200:
+                    blocks.pop(model, None)
+                    blocks.pop('*', None)
+                elif failure:
+                    scope = 'credential' if failure in ('exhausted', 'rejected') else 'model'
+                    seconds = {'exhausted': 300, 'rejected': 300, 'rate_limited': 60, 'unavailable': 15}[failure]
+                    if isinstance(retry_after, (int, float)) and 0 < retry_after <= 86400:
+                        seconds = max(seconds, retry_after)
+                    block = {'model': model, 'scope': scope, 'state': failure,
+                             'retry_at': time.time() + seconds, 'credential_tag': credential_tag(profile)}
+                    blocks['*' if scope == 'credential' else model] = block
             if self.path:
                 try:
                     atomic_write(self.path, json.dumps(self.rows).encode())
@@ -267,4 +340,4 @@ class Stats:
 
     def snapshot(self):
         with self.lock:
-            return {key: dict(value) for key, value in self.rows.items()}
+            return copy.deepcopy(self.rows)

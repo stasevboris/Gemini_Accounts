@@ -4,7 +4,7 @@ import math
 import colorsys
 import time
 from datetime import datetime, timezone
-from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
+from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel,
                                 QPushButton, QProgressBar, QFrame, QSizePolicy,
                                 QGraphicsDropShadowEffect, QComboBox)
 from PySide6.QtCore import Qt, Signal, QTimer, QSize, QRectF, QPointF
@@ -215,19 +215,22 @@ class SegmentedControl(QWidget):
 
     value_changed = Signal(str)
 
-    def __init__(self, values, parent=None):
+    def __init__(self, values, parent=None, columns=0):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
+        layout = QGridLayout(self) if columns else QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self._buttons = {}
         self._current = values[0] if values else ''
-        for value in values:
+        for index, value in enumerate(values):
             btn = QPushButton(value)
             btn.setProperty('segment', True)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda checked, v=value: self._select(v))
-            layout.addWidget(btn)
+            if columns:
+                layout.addWidget(btn, index // columns, index % columns)
+            else:
+                layout.addWidget(btn)
             self._buttons[value] = btn
         self._update_styles()
 

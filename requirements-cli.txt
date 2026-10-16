@@ -4,3 +4,4 @@ bcrypt>=4,<6
 cryptography==46.0.5; sys_platform == 'darwin'
 cryptography>=44,<51; sys_platform != 'darwin'
 tzdata>=2025
+pypdf>=6,<8

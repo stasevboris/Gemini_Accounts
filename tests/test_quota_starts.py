@@ -2,6 +2,7 @@ import sys
 import json
 import tempfile
 import unittest
+import copy
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend import Controller
@@ -19,7 +20,8 @@ class QuotaStartTests(unittest.TestCase):
         self.c.request = request
         self.data = {'groups': [{'kind': kind, 'buckets': [
             {'window': '5h', 'remaining': 1}, {'window': 'weekly', 'remaining': 1}]} for kind in ('gemini', 'claude')]}
-        self.data['models'] = {'gemini-3-flash': {}, 'gpt-oss-120b-medium': {}}
+        self.data['models'] = {'gemini-3.8-flash-low': {}, 'gpt-oss-120b-medium': {}}
+        self.c.models = lambda account: list(self.data['models'])
     def tearDown(self): self.temp.cleanup()
     def test_once_per_provider_and_survives_restart(self):
         self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=820), [])
@@ -27,11 +29,12 @@ class QuotaStartTests(unittest.TestCase):
         for call in self.calls:
             self.assertEqual(call[2]['url'], 'https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent')
             self.assertEqual(call[2]['auth_index'], 'idx')
-            self.assertEqual(json.loads(call[2]['data'])['request']['generationConfig']['maxOutputTokens'], 1)
+            expected = 32 if json.loads(call[2]['data'])['model'].startswith('gemini-') else 1
+            self.assertEqual(json.loads(call[2]['data'])['request']['generationConfig']['maxOutputTokens'], expected)
             self.assertEqual(json.loads(call[2]['data'])['request']['contents'][0]['parts'][0]['text'], 'Hi')
-            self.assertIn(json.loads(call[2]['data'])['model'], ('gemini-3-flash', 'gpt-oss-120b-medium'))
+            self.assertIn(json.loads(call[2]['data'])['model'], ('gemini-3.8-flash-low', 'gpt-oss-120b-medium'))
         self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1100), [])
-        restarted = Controller(data_dir=self.temp.name); restarted.request = self.c.request
+        restarted = Controller(data_dir=self.temp.name); restarted.request = self.c.request; restarted.models = self.c.models
         self.assertEqual(restarted.start_full_quota_windows(self.account, self.data, now=1200), [])
         self.assertEqual(len(self.calls), 2)
     def test_only_fresh_full_quota_and_available_week(self):
@@ -78,11 +81,75 @@ class QuotaStartTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
     def test_partial_quota_cancels_grace_and_restart_keeps_deadline(self):
         self.c.start_full_quota_windows(self.account, self.data, now=1000)
-        restarted = Controller(data_dir=self.temp.name); restarted.request = self.c.request
+        restarted = Controller(data_dir=self.temp.name); restarted.request = self.c.request; restarted.models = self.c.models
         self.assertEqual(restarted.start_full_quota_windows(self.account, self.data, now=1179), [])
         for group in self.data['groups']: group['buckets'][0]['remaining'] = .99
         self.assertEqual(restarted.start_full_quota_windows(self.account, self.data, now=1180), [])
         self.assertEqual(self.calls, [])
+
+    def test_startup_primes_full_week_immediately_and_pins_each_account(self):
+        self.data['groups'][1]['buckets'][1]['remaining'] = 0
+        first = self.c.start_full_quota_windows(self.account, self.data, now=1000, startup=True)
+        second = dict(self.account, name='b', auth_index='idx-b')
+        self.c.start_full_quota_windows(second, self.data, now=1000, startup=True)
+        self.assertEqual(first, [{'kind': 'gemini', 'status': 200}])
+        self.assertEqual([call[2]['auth_index'] for call in self.calls], ['idx', 'idx-b'])
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1001, startup=True), [])
+        restarted = Controller(data_dir=self.temp.name)
+        restarted.request, restarted.models = self.c.request, self.c.models
+        self.assertEqual(restarted.start_full_quota_windows(self.account, self.data, now=1100, startup=True), [])
+        self.assertEqual(len(self.calls), 2)
+
+    def test_full_week_can_start_with_a_partially_used_five_hour_bucket(self):
+        self.data['groups'][0]['buckets'][0]['remaining'] = .95
+        self.data['groups'][1]['buckets'][1]['remaining'] = 0
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1000), [])
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1000, startup=True),
+                         [{'kind': 'gemini', 'status': 200}])
+
+    def test_used_or_unknown_week_does_not_bypass_grace(self):
+        self.data['groups'][0]['buckets'][1]['remaining'] = .99999
+        self.data['groups'][1]['buckets'][1]['remaining'] = None
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1000, startup=True), [])
+        self.assertEqual(self.calls, [])
+
+    def test_legacy_flash_lite_and_unregistered_models_are_not_startup_probes(self):
+        self.data['models'] = {'gemini-3-flash': {}, 'gemini-3.1-flash-lite': {}, 'gemini-3.8-flash-low': {}}
+        self.c.models = lambda account: ['gemini-3-flash', 'gemini-3.1-flash-lite']
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1000, startup=True), [])
+        self.assertEqual(self.calls, [])
+
+    def test_startup_respects_pauses_restrictions_reserves_and_exhaustion(self):
+        for account in [dict(self.account, disabled=True), dict(self.account, access_issue='verification')]:
+            self.assertEqual(self.c.start_full_quota_windows(account, self.data, now=1000, startup=True), [])
+        self.c.preferences['quota-floors'] = {'a': {'gemini': {'weekly': 100}, 'claude': {'5h': 100}}}
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1000, startup=True), [])
+        self.assertEqual(self.calls, [])
+
+    def test_http_response_does_not_claim_weekly_activation_without_quota_change(self):
+        started = self.c.start_full_quota_windows(self.account, self.data, now=1000, startup=True)
+        self.c.confirm_quota_starts(self.account, started, self.data, self.data)
+        self.assertFalse(self.c.quota_starts['a:gemini']['weekly_started'])
+        fresh = copy.deepcopy(self.data)
+        fresh['groups'][0]['buckets'][0]['remaining'] = .9999
+        fresh['groups'][0]['buckets'][1]['remaining'] = .99999
+        self.c.confirm_quota_starts(self.account, started, self.data, fresh)
+        self.assertTrue(self.c.quota_starts['a:gemini']['weekly_started'])
+        self.assertTrue(self.c.quota_starts['a:gemini']['window_started'])
+        unknown = copy.deepcopy(fresh)
+        unknown['groups'][0]['buckets'][1]['remaining'] = None
+        self.c.confirm_quota_starts(self.account, started, self.data, unknown)
+        self.assertIsNone(self.c.quota_starts['a:gemini']['weekly_started'])
+
+    def test_legacy_success_migrates_once_and_still_allows_periodic_grace_to_finish(self):
+        self.data['groups'][0]['buckets'][1]['remaining'] = .9
+        self.data['groups'][1]['buckets'][1]['remaining'] = 0
+        self.c.quota_starts['a:gemini'] = {'model': 'gemini-3-flash', 'status': 200,
+                                        'endpoint': 'daily', 'attempt_at': 900, 'armed': False}
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1000), [])
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1100), [])
+        self.assertEqual(self.c.start_full_quota_windows(self.account, self.data, now=1180),
+                         [{'kind': 'gemini', 'status': 200}])
 
 
 if __name__ == '__main__': unittest.main()

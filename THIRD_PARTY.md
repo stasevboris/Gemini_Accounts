@@ -2,7 +2,7 @@
 
 The installer bundles CLIProxyAPI 8.0.16 from https://github.com/router-for-me/CLIProxyAPI under MIT. Its full license is installed as ClaudeGemini/CLIProxyAPI-LICENSE.txt.
 
-The executables also use Python (PSF license), PySide6 / Qt 6 (LGPL-3.0; PySide6 also offers GPL licensing), PyYAML (MIT), bcrypt (Apache-2.0), cryptography (Apache-2.0 / BSD), and tzdata (Apache-2.0 / public-domain IANA data). PyInstaller uses GPL with its bootloader distribution exception. See the respective projects and dependency lists in requirements.txt and requirements-cli.txt. The account manager uses Qt; the installer uses Python's standard-library Tkinter.
+The executables also use Python (PSF license), PySide6 / Qt 6 (LGPL-3.0; PySide6 also offers GPL licensing), PyYAML (MIT), bcrypt (Apache-2.0), cryptography (Apache-2.0 / BSD), tzdata (Apache-2.0 / public-domain IANA data), and pypdf (BSD-3-Clause, https://github.com/py-pdf/pypdf) for PDF text extraction. PyInstaller uses GPL with its bootloader distribution exception. See the respective projects and dependency lists in requirements.txt and requirements-cli.txt. The account manager uses Qt; the installer uses Python's standard-library Tkinter. The local team MCP bridge uses Python's standard library.
 
 Google, Gemini, Antigravity, Claude and Codex are names of third-party products. This project is independent of their vendors.
 
@@ -21,3 +21,7 @@ Manual account priorities, quota reserves and compact quota summaries were adapt
 from [nikitaeight24family/Omni](https://github.com/nikitaeight24family/Omni)
 at commit `1b7c6ac8e222435fe8e7b0aaeb79536ae01f62d3` (MIT).
 The Qt controls, retained subscription cards and native Claude pool support are local adaptations.
+
+Metered quota warm-up selection and independent post-request quota checks were reviewed
+against [Omni's backend](https://github.com/nikitaeight24family/Omni/blob/main/backend.py) (MIT).
+Immediate startup priming, the Qt status feedback and regression coverage are local adaptations.

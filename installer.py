@@ -21,6 +21,9 @@ from runtime import VERSION
 
 def prepare_update(root, automatic=False):
     root = Path(root)
+    from agent_routes import team_active
+    if team_active(root / 'GeminiAccounts'):
+        raise RuntimeError('An agent team is running. Stop it or wait for completion before updating.')
     secret = root / 'GeminiAccounts' / 'management-key.dpapi'
     if secret.exists():
         key = dpapi(secret.read_bytes(), decrypt=True).decode()
@@ -64,6 +67,10 @@ def install(payload, root, shortcuts=True, automatic=False):
     for name in ('GeminiAccounts-Guide-RU.txt', 'GeminiAccounts-Guide-EN.txt'):
         if (payload / name).is_file():
             shutil.copyfile(payload / name, manager / name)
+    if (payload / 'GeminiTeamMCP.exe').is_file():
+        bridge = manager / 'team-mcp' / VERSION
+        bridge.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(payload / 'GeminiTeamMCP.exe', bridge / 'GeminiTeamMCP.exe')
     config_path = proxy / 'config.yaml'
     if not config_path.exists():
         key, management = secrets.token_urlsafe(40), secrets.token_urlsafe(40)

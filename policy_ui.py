@@ -70,7 +70,7 @@ class PolicyControlsMixin:
         self.google_total_content.setVisible(google and not self.google_total_fold.collapsed)
         self.mode_frame.setVisible(google)
         visibility = [google, True, self.service_visible('api'), self.service_visible('codex'),
-                      self.service_visible('claude'), self.service_visible('grok')]
+                      self.service_visible('claude'), True]
         for button, visible in zip(self.view_switch._buttons.values(), visibility):
             button.setVisible(visible)
         index = self.view_stack.currentIndex()
@@ -117,10 +117,6 @@ class PolicyControlsMixin:
         elif provider == 'codex':
             self.render_chatgpt_accounts()
             self.refresh_chatgpt_accounts(force=True)
-        elif provider == 'grok':
-            self.work(lambda: self.controller.request('/auth-files/fields', 'PATCH',
-                {'name': name, 'priority': value}),
-                lambda _: self.grok_accounts_panel.refresh(force=True), mutation=True)
         else:
             self.claude_accounts_panel.render()
             self.claude_accounts_panel.refresh(force=True)
@@ -197,7 +193,7 @@ class SubscriptionCards(QWidget):
     def render(self, rows):
         host = self.host
         self.header.set_theme(host.theme.colors())
-        title = {'codex': 'ChatGPT', 'claude': 'Claude', 'grok': 'Grok'}.get(self.provider, self.provider.title())
+        title = {'codex': 'ChatGPT', 'claude': 'Claude'}.get(self.provider, self.provider.title())
         self.header.set_title(title + f' · {len(rows)}')
         pooled = []
         for label in ('5h', '1w') if self.show_quota else ():
@@ -210,7 +206,7 @@ class SubscriptionCards(QWidget):
             if name not in names:
                 widget = self.cards.pop(name)['card']
                 widget.hide(); widget.deleteLater()
-        empty_key = {'codex': 'chatgpt_empty', 'claude': 'claude_empty', 'grok': 'grok_empty'}.get(self.provider, 'claude_empty')
+        empty_key = {'codex': 'chatgpt_empty', 'claude': 'claude_empty'}.get(self.provider, 'claude_empty')
         self.empty.setText(tr(empty_key))
         self.empty.setVisible(not rows)
         def order(account):
@@ -273,13 +269,10 @@ class SubscriptionCards(QWidget):
                 families = {'openai': 'ChatGPT', 'claude': 'Claude', 'claude-opus': 'Opus', 'claude-sonnet': 'Sonnet'}
                 reserve_text = tr(state) + ' · ' + ' / '.join(families.get(f, f) for f in quota['reserved_families'])
             plan = quota.get('plan_type') or account.get('plan_type') or ''
-            provider_title = {'codex': 'ChatGPT', 'claude': 'Claude', 'grok': 'Grok'}.get(self.provider, self.provider.title())
+            provider_title = {'codex': 'ChatGPT', 'claude': 'Claude'}.get(self.provider, self.provider.title())
             item['status'].setText(provider_title + (' · ' + str(plan) if plan else '') + ' · ' + (reserve_text or tr(state)))
             host.set_label_color(item['status'], 'warning' if severity in ('warning', 'error') else 'muted')
             detail_lines = [detail] if detail else []
-            if self.provider == 'grok':
-                models = account.get('available_models') or []
-                detail_lines.append(tr('grok_models', models=', '.join(models[:5])) if models else tr('grok_models_unknown'))
             item['detail'].setText('\n'.join(detail_lines))
             item['detail'].setVisible(bool(detail_lines))
             uptime_text = host.uptime_text(self.provider, name)

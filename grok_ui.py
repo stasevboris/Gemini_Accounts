@@ -16,6 +16,16 @@ from policy_widgets import ActionGrid
 
 
 class GrokAccountsPanel(QScrollArea):
+    AUTH = GrokAuth
+    KIND = 'grok'
+    TITLE = 'tab_grok_accounts'
+
+    def text(self, key, **kwargs):
+        return tr(key.replace('grok_', self.KIND + '_', 1), **kwargs)
+
+    def auth(self):
+        return self.AUTH(self.host.controller)
+
     def __init__(self, host):
         super().__init__(host)
         self.host = host
@@ -43,7 +53,7 @@ class GrokAccountsPanel(QScrollArea):
         self.refresh_button.clicked.connect(lambda: self.refresh(force=True))
         controls.addWidget(self.refresh_button)
         layout.addWidget(controls)
-        self.cards = SubscriptionCards(host, 'grok', [
+        self.cards = SubscriptionCards(host, self.KIND, [
             ('api_pause', self.toggle_account),
             ('chatgpt_remove', self.remove_account)], quota_labels=[])
         layout.addWidget(self.cards)
@@ -52,10 +62,10 @@ class GrokAccountsPanel(QScrollArea):
         self.render()
 
     def render(self):
-        self.title.setText(tr('tab_grok_accounts'))
-        self.note.setText(tr('grok_note'))
-        self.add_button.setText(tr('grok_add'))
-        self.refresh_button.setText(tr('grok_refresh'))
+        self.title.setText(tr(self.TITLE))
+        self.note.setText(self.text('grok_note'))
+        self.add_button.setText(self.text('grok_add'))
+        self.refresh_button.setText(self.text('grok_refresh'))
         self.cards.render(self.rows)
 
     def refresh(self, force=False):
@@ -67,7 +77,7 @@ class GrokAccountsPanel(QScrollArea):
         self.busy = True
         def load():
             try:
-                auth = GrokAuth(host.controller)
+                auth = self.auth()
                 rows = auth.accounts()
                 for account in rows:
                     account['quota'] = auth.quota(account)
@@ -86,7 +96,8 @@ class GrokAccountsPanel(QScrollArea):
                 host.show_notice(error, 'warning')
                 return
             self.rows = rows or []
-            host.account_uptime.update_many('xai', self.rows)
+            for provider in {a.get('provider', a.get('type')) for a in self.rows}:
+                host.account_uptime.update_many(provider, [a for a in self.rows if a.get('provider', a.get('type')) == provider])
             host.check_account_alerts()
             self.render()
             host.render_token_capacity()
@@ -95,7 +106,7 @@ class GrokAccountsPanel(QScrollArea):
     def changed(self):
         self.refresh(force=True)
         self.host.work(self.host.integrations.refresh_desktop_model_labels,
-                       lambda _: self.host.show_notice(tr('grok_login_saved'), 'green'))
+                       lambda _: self.host.show_notice(self.text('grok_login_saved'), 'green'))
 
     def toggle_account(self, account):
         host = self.host
@@ -115,23 +126,23 @@ class GrokAccountsPanel(QScrollArea):
     def add_account(self):
         if self.busy or self.pending_login or self.host.busy:
             return
-        self.host.work(lambda: GrokAuth(self.host.controller).begin_login(),
+        self.host.work(lambda: self.auth().begin_login(),
                        self.login_started, mutation=True)
 
     def login_started(self, result):
         if not isinstance(result, dict):
-            self.host.show_notice(tr('grok_login_failed'), 'warning')
+            self.host.show_notice(self.text('grok_login_failed'), 'warning')
             return
         self.pending_login = (result['state'], time.monotonic(), result['expires_in'])
         self.add_button.setEnabled(False)
         dialog = self.login_dialog = QDialog(self.host)
-        dialog.setWindowTitle(tr('grok_add'))
+        dialog.setWindowTitle(self.text('grok_add'))
         dialog.setMinimumWidth(430)
         layout = QVBoxLayout(dialog)
-        heading = QLabel(tr('grok_login_heading'))
+        heading = QLabel(self.text('grok_login_heading'))
         heading.setFont(QFont('Segoe UI', 18, QFont.Bold))
         layout.addWidget(heading)
-        note = QLabel(tr('grok_login_note'))
+        note = QLabel(self.text('grok_login_note'))
         note.setWordWrap(True)
         note.setProperty('class', 'muted')
         layout.addWidget(note)
@@ -142,13 +153,13 @@ class GrokAccountsPanel(QScrollArea):
             code.setAlignment(Qt.AlignCenter)
             code.setFont(QFont('Segoe UI', 18, QFont.Bold))
             layout.addWidget(code)
-            copy = QPushButton(tr('grok_copy_code'))
+            copy = QPushButton(self.text('grok_copy_code'))
             copy.clicked.connect(lambda: QApplication.clipboard().setText(result['user_code']))
             layout.addWidget(copy)
-        open_button = QPushButton(tr('grok_open_login'))
+        open_button = QPushButton(self.text('grok_open_login'))
         open_button.clicked.connect(lambda: webbrowser.open(result['url']))
         layout.addWidget(open_button)
-        status = QLabel(tr('grok_signin_pending'))
+        status = QLabel(self.text('grok_signin_pending'))
         status.setWordWrap(True)
         status.setProperty('class', 'muted')
         layout.addWidget(status)
@@ -174,7 +185,7 @@ class GrokAccountsPanel(QScrollArea):
             return
         def load():
             try:
-                return GrokAuth(self.host.controller).login_status(state), None
+                return self.auth().login_status(state), None
             except AccountError as error:
                 return {'status': 'wait'}, safe_detail(error)
         def done(result):
@@ -185,7 +196,7 @@ class GrokAccountsPanel(QScrollArea):
                 self.finish_login(True)
             elif value.get('status') == 'error':
                 self.finish_login(False)
-                self.host.show_notice(tr('grok_login_failed'), 'warning')
+                self.host.show_notice(self.text('grok_login_failed'), 'warning')
             else:
                 QTimer.singleShot(1800, self.poll_login)
         self.host.work(load, done)
@@ -202,9 +213,9 @@ class GrokAccountsPanel(QScrollArea):
             dialog.close()
         if not success:
             if cancel:
-                self.host.work(lambda: GrokAuth(self.host.controller).cancel_login(state), lambda _: None)
+                self.host.work(lambda: self.auth().cancel_login(state), lambda _: None)
             if timed_out:
-                self.host.show_notice(tr('grok_login_timeout'), 'warning')
+                self.host.show_notice(self.text('grok_login_timeout'), 'warning')
             return
-        self.host.show_notice(tr('grok_login_saved'), 'green')
+        self.host.show_notice(self.text('grok_login_saved'), 'green')
         self.changed()

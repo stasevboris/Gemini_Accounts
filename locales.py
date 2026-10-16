@@ -18,6 +18,7 @@ LANGUAGES = {
 
 _current = 'en'
 
+
 # fmt: off
 _strings = {
 
@@ -1491,6 +1492,10 @@ _strings.update({
     'api_remove_confirm': dict(en='Remove the key “{name}” and its models?', ru='Удалить ключ «{name}» и его модели?', uk='Видалити ключ «{name}» та його моделі?', be='Выдаліць ключ «{name}» і яго мадэлі?', zh='删除密钥“{name}”及其模型？'),
     'api_stats': dict(en='Responses: {success} • errors: {failed}\nTokens: {input} input / {output} output • average {seconds} s', ru='Ответов: {success} • ошибок: {failed}\nТокены: {input} вход / {output} выход • среднее {seconds} с', uk='Відповідей: {success} • помилок: {failed}\nТокени: {input} вхід / {output} вихід • середнє {seconds} с', be='Адказаў: {success} • памылак: {failed}\nТокены: {input} уваход / {output} выхад • сярэдняе {seconds} с', zh='响应：{success} • 错误：{failed}\n令牌：输入 {input} / 输出 {output} • 平均 {seconds} 秒'),
     'api_last': dict(en='Last: {model} • HTTP {status} • {time}', ru='Последний: {model} • HTTP {status} • {time}', uk='Останній: {model} • HTTP {status} • {time}', be='Апошні: {model} • HTTP {status} • {time}', zh='最近：{model} • HTTP {status} • {time}'),
+    'api_exhausted': dict(en='Provider reported exhausted tokens, credits or quota.', ru='Провайдер сообщил: закончились токены, баланс или квота.', uk='Провайдер повідомив: токени, баланс або квоту вичерпано.', be='Правайдар паведаміў: токены, баланс або квота вычарпаныя.', zh='提供商报告令牌、余额或配额已用尽。'),
+    'api_rate_limited': dict(en='Temporary request/concurrency limit; token exhaustion is not confirmed.', ru='Временный лимит частоты или одновременных запросов; исчерпание токенов не подтверждено.', uk='Тимчасовий ліміт частоти або одночасних запитів; вичерпання токенів не підтверджено.', be='Часовы ліміт частаты або адначасовых запытаў; вычарпанне токенаў не пацверджана.', zh='暂时达到请求频率或并发限制；未确认令牌耗尽。'),
+    'api_retry_at': dict(en='Skipped during automatic rotation until {time}; the next request can retry it afterwards.', ru='Пропускается при автоматической ротации до {time}; следующий запрос после этого времени сможет повторить попытку.', uk='Пропускається під час ротації до {time}; наступний запит після цього часу зможе повторити спробу.', be='Прапускаецца пры ратацыі да {time}; наступны запыт пасля гэтага часу зможа паўтарыць спробу.', zh='自动轮换期间跳过至 {time}；之后的新请求可以重试。'),
+    'api_unavailable': dict(en='Key unavailable or rejected — check the provider credentials.', ru='Ключ недоступен или отклонён — проверьте данные провайдера.', uk='Ключ недоступний або відхилений — перевірте дані провайдера.', be='Ключ недаступны або адхілены — праверце дадзеныя правайдара.', zh='密钥不可用或被拒绝；请检查提供商凭据。'),
     'api_saved': dict(en='API models updated. Reopen Claude Desktop to refresh its model menu.', ru='API-модели обновлены. Переоткройте Claude Desktop, чтобы обновить меню моделей.', uk='API-моделі оновлено. Перевідкрийте Claude Desktop, щоб оновити меню моделей.', be='API-мадэлі абноўлены. Пераадкрыйце Claude Desktop, каб абнавіць меню мадэляў.', zh='API 模型已更新。重新打开 Claude Desktop 以刷新模型菜单。'),
     'api_anthropic': dict(en='Anthropic-compatible API', ru='API, совместимый с Anthropic', uk='API, сумісний з Anthropic', be='API, сумяшчальны з Anthropic', zh='Anthropic 兼容 API'),
     'api_label': dict(en='Name', ru='Название', uk='Назва', be='Назва', zh='名称'),
@@ -1682,3 +1687,107 @@ _strings.update({
     'grok_models': dict(en='Available models: {models}', ru='Доступные модели: {models}', uk='Доступні моделі: {models}', be='Даступныя мадэлі: {models}', zh='可用模型：{models}'),
     'grok_models_unknown': dict(en='Model list is not available yet.', ru='Список моделей пока недоступен.', uk='Список моделей поки недоступний.', be='Спіс мадэляў пакуль недаступны.', zh='模型列表暂不可用。'),
 })
+
+_team_strings = {
+    'tab': ('Team', 'Команда'),
+    'title': ('Agent team', 'Команда агентов'),
+    'settings': ('Task mode, limits and permissions', 'Тип задачи, лимиты и доступ'),
+    'note': ('Choose accounts, models and roles. Each agent has its own history and a pinned account. Repeated accounts share quota and run one request at a time. Starting a task uses provider quota.', 'Выбирай аккаунты, модели и роли. У каждого агента своя история и закреплённый аккаунт. Агенты на одном аккаунте делят квоту и отправляют запросы по очереди. Запуск задачи расходует квоты провайдеров.'),
+    'enable': ('Enable agent teams', 'Включить команды агентов'),
+    'connect_chat': ('Connect team to Claude', 'Подключить команду к Claude'),
+    'chat_hint': ('Save this roster, then select Agent team in the chat model picker or call the team_start tool. Chat runs appear on this board.', 'Сохрани состав, затем выбери «Команда агентов» в списке моделей чата или вызови инструмент team_start. Запуски из чата видны на этой доске.'),
+    'chat_connected': ('Team model and MCP tools added to connected Claude clients. Reload/restart Claude when its current work is finished.', 'Модель команды и MCP-инструменты добавлены в подключённые клиенты Claude. Перезапусти Claude после завершения текущей работы.'),
+    'disabled_hint': ('Team mode is off. You can edit and save the roster. To run a task, check “Enable agent teams” above.', 'Режим команды выключен. Состав и настройки можно менять и сохранять. Для запуска поставь галочку «Включить команды агентов» выше.'),
+    'ready_hint': ('Ready to start. Only “Start task” sends requests to the models.', 'Всё готово к запуску. Запросы к моделям отправляются только по кнопке «Запустить задачу».'),
+    'no_accounts': ('Refresh accounts to load the available models.', 'Нажми «Обновить аккаунты», чтобы загрузить доступные модели.'),
+    'no_roster': ('Create a roster or add participants with +.', 'Сформируй состав или добавь участников кнопкой +.'),
+    'no_task': ('Enter a task in the text field above.', 'Введи задачу в поле выше.'),
+    'loading': ('Loading accounts and models…', 'Загружаются аккаунты и модели…'),
+    'reload_needed': ('Could not refresh accounts. Check the error below and try again.', 'Не удалось обновить аккаунты. Посмотри ошибку ниже и повтори обновление.'),
+    'not_connected': ('The local gateway is not connected yet. Wait for the connection and refresh accounts.', 'Локальный шлюз ещё не подключён. Дождись подключения и обнови аккаунты.'),
+    'running': ('The team is running. You can stop it with “Stop team”.', 'Команда работает. Остановить её можно кнопкой «Остановить команду».'),
+    'stopping': ('Stopping the team and restoring account routes…', 'Команда останавливается, маршруты аккаунтов восстанавливаются…'),
+    'no_run': ('No team task is running.', 'Сейчас нет запущенной задачи команды.'),
+    'no_result': ('Export becomes available when a result appears.', 'Экспорт станет доступен, когда появится результат.'),
+    'add': ('Add a participant', 'Добавить участника'),
+    'remove': ('Remove the selected participant', 'Удалить выбранного участника'),
+    'select_row': ('Select a participant in the roster to remove it.', 'Выбери участника в таблице для удаления.'),
+    'count': ('Number of participants when creating a roster', 'Число участников при формировании состава'),
+    'exported': ('Result exported.', 'Результат экспортирован.'),
+    'export_error': ('Could not save the result. Choose a writable file.', 'Не удалось сохранить результат. Выбери файл, доступный для записи.'),
+    'general': ('Research, analysis and writing', 'Поиск, анализ и тексты'),
+    'code': ('Project code and files', 'Код и файлы проекта'),
+    'mode': ('Task mode', 'Тип задачи'),
+    'workspace': ('Project folder', 'Папка проекта'),
+    'parallel': ('Concurrent requests', 'Одновременных запросов'),
+    'max_requests': ('Maximum provider requests', 'Максимум запросов к провайдерам'),
+    'minutes': ('Run time limit, minutes', 'Предел времени, минут'),
+    'steps': ('Tool steps per agent turn', 'Шагов с инструментами за ход агента'),
+    'retries': ('Retries for temporary provider errors', 'Повторов при временной ошибке провайдера'),
+    'output_tokens': ('Maximum output tokens per response', 'Максимум токенов на один ответ'),
+    'review_rounds': ('Peer review rounds (0 disables review)', 'Раундов взаимной проверки (0 — без проверки)'),
+    'web': ('Allow public web search and website reading', 'Разрешить поиск и чтение публичных сайтов'),
+    'write': ('Allow the coordinator to write reviewed project files', 'Разрешить координатору записывать проверенные файлы проекта'),
+    'commands': ('Allow the coordinator to execute project commands', 'Разрешить координатору выполнять команды проекта'),
+    'permissions': ('Workers and reviewers read files and prepare proposals. Only the coordinator writes final changes after successful reviews. Commands run with your Windows user permissions; file writes are backed up in the encrypted run history.', 'Исполнители и проверяющие читают файлы и готовят предложения. Координатор записывает итоговые изменения после успешных проверок. Команды выполняются с правами твоего пользователя Windows; прежние версии записанных файлов хранятся в зашифрованной истории запуска.'),
+    'refresh': ('Refresh accounts', 'Обновить аккаунты'),
+    'generate': ('Create roster', 'Сформировать состав'),
+    'save': ('Save settings', 'Сохранить настройки'),
+    'start': ('Start task', 'Запустить задачу'),
+    'stop': ('Stop team', 'Остановить команду'),
+    'export': ('Export result', 'Экспорт результата'),
+    'agent': ('Agent', 'Агент'),
+    'account': ('Account', 'Аккаунт'),
+    'model': ('Model', 'Модель'),
+    'role': ('Role', 'Роль'),
+    'instructions': ('Role instructions', 'Инструкции для роли'),
+    'coordinator': ('Coordinator', 'Координатор'),
+    'worker': ('Worker', 'Исполнитель'),
+    'reviewer': ('Reviewer', 'Проверяющий'),
+    'status': ('Status', 'Статус'),
+    'subtask': ('Subtask', 'Подзадача'),
+    'review': ('Review', 'Проверка'),
+    'feedback': ('Feedback', 'Замечания'),
+    'task': ('Describe the shared task, expected deliverables and acceptance criteria…', 'Опиши общую задачу, ожидаемый результат и критерии готовности…'),
+    'journal': ('Team activity appears here.', 'Здесь появится журнал работы команды.'),
+    'loaded': ('Accounts available: {count}', 'Доступно аккаунтов: {count}'),
+    'saved': ('Team settings saved. No task was started.', 'Настройки команды сохранены. Задача не запущена.'),
+    'account_missing': ('The account or model is unavailable. Refresh and choose an available account/model.', 'Аккаунт или модель недоступны. Обнови список и выбери доступный аккаунт и модель.'),
+    'summary': ('{status} · requests {calls}/{limit} · observed tokens {tokens}', '{status} · запросы {calls}/{limit} · учтено токенов {tokens}'),
+    'approved': ('Approved', 'Одобрено'),
+    'pending': ('Unapproved', 'Не одобрено'),
+    'restore_error': ('Some temporary account routes could not be restored. Retry after the gateway is available; the recovery record is retained.', 'Не удалось восстановить часть временных маршрутов аккаунтов. Запись восстановления сохранена; повтори запуск после восстановления связи со шлюзом.'),
+    'history': ('Run history…', 'История запусков…'),
+    'history_error': ('Could not read this run history.', 'Не удалось прочитать историю запуска.'),
+    'interrupted': ('The application closed during this run. It will not resume automatically.', 'Приложение было закрыто во время этого запуска. Автоматическое продолжение отключено.'),
+    'state_ready': ('Ready', 'Готов'),
+    'state_planning': ('Planning', 'Планирование'),
+    'state_working': ('Working', 'Работает'),
+    'state_waiting': ('Waiting to retry', 'Ожидает повтора'),
+    'state_queued': ('Queued', 'В очереди'),
+    'state_reviewing': ('Peer review', 'Взаимная проверка'),
+    'state_synthesizing': ('Combining results', 'Сборка результата'),
+    'state_done': ('Result ready', 'Результат готов'),
+    'state_complete': ('Completed', 'Завершено'),
+    'state_needs_review': ('Needs review', 'Требует проверки'),
+    'state_stopped': ('Stopped / limit reached', 'Остановлено / достигнут лимит'),
+    'state_error': ('Error', 'Ошибка'),
+    'state_interrupted': ('Interrupted', 'Прервано'),
+}
+for _key, (_en, _ru) in _team_strings.items():
+    _strings['team_' + _key] = {code: _ru if code == 'ru' else _en for code in LANGUAGES}
+
+_strings["tab_kimi_accounts"] = dict(en="Kimi", ru="Kimi", uk="Kimi", be="Kimi", zh="Kimi")
+_strings['google_startup_report'] = {code: (
+    'Проверка Google: аккаунтов {accounts}; ответов {ok}, ошибок {failed}; изменение недельной квоты подтверждено: {confirmed}.' if code == 'ru' else
+    'Google startup check: {accounts} accounts; {ok} responses, {failed} errors; weekly quota changes confirmed: {confirmed}.') for code in LANGUAGES}
+for _key, (_en, _ru) in {
+    'confirmed': ('Startup ping: weekly quota consumption confirmed.', 'Запрос при запуске: расход недельной квоты подтверждён.'),
+    'unconfirmed': ('Startup ping answered; weekly quota change has not been confirmed yet.', 'На запрос при запуске получен ответ; изменение недельной квоты пока не подтверждено.'),
+    'failed': ('Startup ping failed (HTTP {status}).', 'Запрос при запуске не прошёл (HTTP {status}).'),
+}.items():
+    _strings['google_startup_' + _key] = {code: _ru if code == 'ru' else _en for code in LANGUAGES}
+_strings["conn_opencode"] = {code: "OpenCode" for code in LANGUAGES}
+for _key, _value in list(_strings.items()):
+    if _key.startswith("grok_"):
+        _strings[_key.replace("grok_", "kimi_", 1)] = {code: value.replace("Grok", "Kimi") for code, value in _value.items()}

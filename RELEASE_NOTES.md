@@ -1,3 +1,55 @@
+# Gemini Accounts 1.5.3 — provider cleanup, API key rotation and agent reliability
+
+- Removes Grok, Kimi and OpenCode from the application UI, team inventory and newly published client model routes. Existing credential/config backups remain available for rollback.
+- Keeps API key rotation limited to compatible profiles (same endpoint, protocol and exact model), records exhausted/unavailable states, and reports when no usable tokens or quota remain.
+- Stops retry storms for deterministic `auth_unavailable` agent failures and keeps transient provider retries cancellable.
+- Restricts agent teams to Google, ChatGPT and Claude accounts while retaining one-account request serialization and peer-review safeguards.
+- Distinguishes request/concurrency throttling from exhausted credits, respects per-key/model cooldowns across restarts, and automatically rechecks on a later request. Editing a credential invalidates its old cooldown.
+- Gives agents a final tool-free turn at the step limit, includes explicit role permissions in planning, and uses another independent reviewer if one fails.
+
+# Gemini Accounts 1.5.2 — Anthropic history and team route recovery
+
+- Removes only malformed trailing `thinking` blocks from replayed Anthropic assistant history; normal thinking, text, tool calls and user content remain intact.
+- Recovers temporary `ga-team-*` account routes after an interrupted run, reuses a durable lease when safe, and cleans orphaned prefixes before the next team.
+
+# Gemini Accounts 1.5.1 — Account cooldowns and actionable team failures
+
+- Waits for the selected account/model's native cooldown and Retry-After before retrying a temporary provider failure. Repeated requests no longer consume all retries during the gateway's one-minute recovery pause. Waiting remains cancellable and bounded by the saved run-time limit.
+- Shows agents waiting for a retry in the task board and chat progress. Final provider failures include feedback for the affected agent, including the coordinator, so partial results retain the actual access/quota error.
+- Keeps provider HTTP statuses for non-streaming team failures and includes status metadata in streamed error events. A fresh delivery after a finished failed run can retry instead of returning the cached failure.
+- Retains the user's saved roster and account pins. Provider subscription, balance and access restrictions still require an available account; the program does not silently switch to another credential.
+
+# Gemini Accounts 1.5.0 — Teams inside Claude and Flua connections
+
+- Adds an Agent team model and a local MCP bridge for delegating from an existing Claude Desktop or Claude Code conversation to the roster saved in the manager. Connecting preserves existing client models, environment settings and other MCP servers; restart the client when convenient to load its new configuration.
+- Passes the current model request's conversation history to the team as a paginated reference. MCP callers can supply relevant context explicitly. Other chats and project conversations are not read automatically.
+- Shows chat-launched runs in the manager with a shared task board, stop controls and encrypted history. One team runs at a time; duplicate delivery of the same chat request reuses its run.
+- Adds paginated text/code/DOCX/PDF reading and project text search. Long agent conversations are compacted within the request budget while preserving their full encrypted history. PDF image scans still require OCR.
+- Allows the coordinator to use explicitly enabled project commands during analysis and validation. Reviewed file writes retain their separate permission and final-stage checks.
+- Adds a Flua preset with its API host and Opus 5.5 ID. API checks, model discovery and provider forwarding identify Gemini Accounts instead of using Python's default User-Agent, which some API frontends reject with HTTP 403. Normalizes forwarded header casing to prevent duplicate JSON media types and resulting HTTP 400 errors. Changing an API server requires entering its key again.
+
+# Gemini Accounts 1.4.1 — Usable team controls
+
+- Allows preparing and saving a team while team mode is off. The opt-in checkbox sits beside the task actions, with an explanation of what is needed before starting.
+- Shows validation, refresh and export feedback inside the team panel. Unavailable start, stop, export and remove actions explain their requirements.
+- Keeps participant IDs unique when adding after a deletion, and prevents repeated stop requests while cancellation is in progress.
+- Primes full Google weekly quota buckets in the background immediately after fresh startup quota loading. Each bounded greeting is pinned to its account and quota family, uses a registered low-effort metered model, and retains persistent cooldowns across restarts. Paused, restricted, reserved or exhausted accounts are skipped. Post-request quota observations distinguish an HTTP response from confirmed weekly consumption.
+
+# Gemini Accounts 1.4.0 — Configurable agent teams, OpenCode and Kimi
+
+- Adds an opt-in Team tab with 1–100 configurable participants, per-agent account/model/role/instructions, separate histories, a shared task board, messages, peer review, revisions and final synthesis. Mixed Google and ChatGPT teams can use available models including GPT-6 Luna.
+- Separates team size from concurrent request limits. Requests are pinned to their selected account using reversible native model prefixes; agents sharing an account serialize requests and share its quota.
+- Adds bounded provider requests, time, tool steps and output length; stop controls; encrypted run history and Markdown export. The feature remains disabled until the user enables it and starts a task.
+- Supports research/web tasks and project files. Workers and reviewers prepare results without writing project files; the coordinator may apply reviewed changes only when the user enables writes. File writes check the current content hash and retain encrypted backups. Optional commands run with the current user's permissions.
+- Connects OpenCode through a separately named provider while preserving other providers, agents and model choices. Existing JSON/JSONC config is backed up reversibly.
+- Adds Kimi Code account sign-in for kimi.com/kimi.ai, account/model display and separate client routes. Model availability still depends on the account's actual plan.
+
+# Gemini Accounts 1.3.14 — Grok visibility in Claude Desktop
+
+- Publishes Grok models using stable client-compatible route names while retaining their Grok labels. Claude Desktop no longer drops raw `grok-*` entries during model validation.
+- Pins these routes to the native xAI channel, preserves conversation history and tools, and scopes cooldowns to Grok accounts. Existing custom routes and client settings remain intact.
+- Migrates previously connected Desktop presets automatically. Existing raw Grok routes remain available for older clients and conversations.
+
 # Gemini Accounts 1.3.13 — Compact Claude model pickers
 
 - Shows each Google-backed Claude Opus/Sonnet model once and retains only Gemini 3.8 Flash High, Medium and Low in the Claude Desktop picker. Older Flash, Pro, Lite, Google Haiku and duplicate selected-model entries are omitted from the picker.

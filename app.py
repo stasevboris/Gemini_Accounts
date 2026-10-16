@@ -26,7 +26,7 @@ from activity import Activity
 from account_uptime import AccountUptime
 from alert_tracker import AlertTracker, account_alert_conditions
 from token_capacity import TokenCapacity
-from grok_ui import GrokAccountsPanel
+from team_ui import TeamPanel
 from routing import rank_accounts, quota_projection, quota_entry, weekly_threshold, weekly_depleted
 from integrations import Integrations
 import api_keys
@@ -84,6 +84,8 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         self.model_cache = {}
         self.quota_cache = {}
         self.quota_pending = set()
+        self.google_startup_checked = set()
+        self.google_startup_probes = {}
         self.account_widgets = {}
         self.detail_account = object()
         self.detail_quota_widgets = {}
@@ -138,7 +140,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         self.refresh_toolbar_icons()
 
         # Timers
-        QTimer.singleShot(120, lambda: self.refresh(prepare=True))
+        QTimer.singleShot(120, self, lambda: self.refresh(prepare=True) if not self.closed else None)
         self._quota_timer = QTimer(self)
         self._quota_timer.timeout.connect(self.periodic_quota)
         self._quota_timer.start(60000)
@@ -155,7 +157,6 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         self._api_timer.timeout.connect(self.poll_api_stats)
         self._api_timer.timeout.connect(self.refresh_chatgpt_accounts)
         self._api_timer.timeout.connect(self.claude_accounts_panel.refresh)
-        self._api_timer.timeout.connect(self.grok_accounts_panel.refresh)
         self._api_timer.start(5000)
         self._init_desktop_controls()
         QTimer.singleShot(30000, self.check_for_updates)
@@ -466,7 +467,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         body_outer.addWidget(self.mode_frame)
 
         # View switcher
-        self.view_switch = SegmentedControl([tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys'), tr('tab_chatgpt'), tr('tab_claude_accounts'), tr('tab_grok_accounts')])
+        self.view_switch = SegmentedControl([tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys'), tr('tab_chatgpt'), tr('tab_claude_accounts'), tr('team_tab')], columns=3)
         self.view_switch.value_changed.connect(self.change_view)
         body_outer.addWidget(self.view_switch)
 
@@ -530,11 +531,11 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         else:
             self.claude_accounts_panel.render()
         self.view_stack.addWidget(self.claude_accounts_panel)
-        if not hasattr(self, 'grok_accounts_panel'):
-            self.grok_accounts_panel = GrokAccountsPanel(self)
+        if not hasattr(self, 'team_panel'):
+            self.team_panel = TeamPanel(self)
         else:
-            self.grok_accounts_panel.render()
-        self.view_stack.addWidget(self.grok_accounts_panel)
+            self.team_panel.render()
+        self.view_stack.addWidget(self.team_panel)
 
         body_outer.addWidget(self.view_stack, 1)
 
@@ -874,7 +875,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
 
     def change_view(self, value):
         views = [tr('tab_account_quotas'), tr('tab_routing_stats'), tr('tab_api_keys'), tr('tab_chatgpt'),
-                 tr('tab_claude_accounts'), tr('tab_grok_accounts')]
+                 tr('tab_claude_accounts'), tr('team_tab')]
         self.view_stack.setCurrentIndex(views.index(value))
         if self.view_stack.currentIndex() == 2:
             self.render_api_profiles()
@@ -886,9 +887,8 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
             self.claude_accounts_panel.render()
             self.claude_accounts_panel.refresh()
         elif self.view_stack.currentIndex() == 5:
-            self.grok_accounts_panel.render()
-            self.grok_accounts_panel.refresh()
-
+            self.team_panel.render()
+            self.team_panel.refresh()
     def render_api_profiles(self):
         rows = api_keys.profiles(self.controller)
         signature = (repr(rows), current_language(), self.theme.current)
@@ -927,15 +927,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
             models.setTextFormat(Qt.PlainText)
             models.setWordWrap(True)
             cl.addWidget(models)
-            stats = self.api_stats.get(row['id'], {})
-            count = stats.get('success', 0) + stats.get('failed', 0)
-            text = tr('api_stats', success=stats.get('success', 0), failed=stats.get('failed', 0),
-                      input=f"{stats.get('input_tokens', 0):,}", output=f"{stats.get('output_tokens', 0):,}",
-                      seconds=f"{stats.get('latency_ms', 0) / max(count, 1) / 1000:.1f}")
-            if stats.get('last_at'):
-                text += '\n' + tr('api_last', model=model_name(stats['last_model'], {}),
-                                  status=stats['last_status'], time=self.activity_time(stats['last_at']))
-            metrics = QLabel(text)
+            metrics = QLabel(self.api_metrics_text(row))
             self._api_metrics[row['id']] = metrics
             metrics.setTextFormat(Qt.PlainText)
             metrics.setWordWrap(True)
@@ -960,6 +952,15 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         if stats.get('last_at'):
             text += '\n' + tr('api_last', model=model_name(stats['last_model'], {}),
                               status=stats['last_status'], time=self.activity_time(stats['last_at']))
+        if stats.get('exhausted'):
+            text += '\n' + tr('api_exhausted')
+        elif stats.get('unavailable'):
+            text += '\n' + tr('api_unavailable')
+        elif stats.get('failure') == 'rate_limited':
+            text += '\n' + tr('api_rate_limited')
+        retry_at = max((b.get('retry_at', 0) for b in stats.get('cooldowns', {}).values()), default=0)
+        if retry_at > time.time():
+            text += '\n' + tr('api_retry_at', time=time.strftime('%H:%M:%S', time.localtime(retry_at)))
         return text
 
     def poll_api_stats(self):
@@ -998,10 +999,14 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         label = QLineEdit(row.get('label', ''))
         label.setObjectName('apiLabelInput')
         kind = ThemedComboBox()
+        kind.setObjectName('apiProviderInput')
         kind.addItem('TokenHarbor', 'tokenharbor')
         kind.addItem(tr('api_anthropic'), 'anthropic')
-        kind.setCurrentIndex(max(0, kind.findData(row.get('kind', 'tokenharbor'))))
+        kind.addItem('Flua · Anthropic', 'flua')
+        preset = 'flua' if row.get('base_url', '').rstrip('/').removesuffix('/v1') == 'https://api.flua.ink' else row.get('kind', 'tokenharbor')
+        kind.setCurrentIndex(max(0, kind.findData(preset)))
         base = QLineEdit(row.get('base_url', 'https://tokenharbor.ai'))
+        base.setObjectName('apiUrlInput')
         key = QLineEdit()
         key.setObjectName('apiKeyInput')
         key.setEchoMode(QLineEdit.Password)
@@ -1012,10 +1017,14 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         models.setAcceptRichText(False)
         models.setMaximumHeight(95)
         def provider_changed():
-            if base.text() in ('https://tokenharbor.ai', 'https://api.anthropic.com'):
-                base.setText('https://api.anthropic.com' if kind.currentData() == 'anthropic' else 'https://tokenharbor.ai')
-            if not row and kind.currentData() == 'anthropic' and models.toPlainText() == 'claude-haiku-5.5:free':
-                models.clear()
+            defaults = {'tokenharbor': ('https://tokenharbor.ai', 'claude-haiku-5.5:free'),
+                        'anthropic': ('https://api.anthropic.com', ''),
+                        'flua': ('https://api.flua.ink', 'claude-opus-5-5')}
+            url, model = defaults[kind.currentData()]
+            if not base.text().strip() or base.text().rstrip('/') in {item[0] for item in defaults.values()}:
+                base.setText(url)
+            if not row and models.toPlainText().strip() in {item[1] for item in defaults.values()}:
+                models.setPlainText(model)
         kind.currentIndexChanged.connect(provider_changed)
         for index, (caption, widget) in enumerate((('api_label', label), ('api_provider', kind),
                                                   ('api_url', base), ('api_key', key), ('api_models', models))):
@@ -1049,12 +1058,15 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         closed = [False]
         dialog.finished.connect(lambda _: closed.__setitem__(0, True))
         def values():
-            return dict(row, label=label.text(), kind=kind.currentData(), base_url=base.text(),
+            return dict(row, label=label.text(), kind='anthropic' if kind.currentData() == 'flua' else kind.currentData(), base_url=base.text(),
                         key=key.text().strip(), models=models.toPlainText().replace(',', '\n').splitlines(), enabled=enabled.isChecked(), rotate=rotate.isChecked())
         def fetch():
             value = values()
-            if not value['key'] and row:
-                value['key'] = next((p['key'] for p in api_keys.profiles(self.controller, private=True) if p['id'] == row['id']), '')
+            try:
+                value['key'] = api_keys.profile_key(self.controller, value)
+            except (AccountError, ValueError) as error:
+                message.setText(str(error))
+                return
             # Validate the URL before sending a credential; do not persist edits yet.
             from urllib.parse import urlsplit
             url = urlsplit(value['base_url'])
@@ -1090,10 +1102,10 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         def verify(saving=False):
             try:
                 value = api_keys.validated_profile(self.controller, values())
-            except AccountError:
-                message.setText(tr('api_invalid'))
+            except (AccountError, ValueError) as error:
+                message.setText(str(error))
                 return
-            controls = [label, kind, base, key, models, enabled, load, check, check_on_save, save]
+            controls = [label, kind, base, key, models, enabled, rotate, load, check, check_on_save, save]
             for control in controls:
                 control.setEnabled(False)
             message.setText(tr('api_checking'))
@@ -1118,8 +1130,8 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         def apply():
             try:
                 value = api_keys.validated_profile(self.controller, values())
-            except AccountError:
-                message.setText(tr('api_invalid'))
+            except (AccountError, ValueError) as error:
+                message.setText(str(error))
                 return
             old = next((p for p in api_keys.profiles(self.controller, private=True) if p['id'] == row.get('id')), {})
             changed = any(value.get(k) != old.get(k) for k in ('key', 'kind', 'base_url', 'models'))
@@ -1175,7 +1187,6 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
             self.update_detail_account()
         for account in items:
             self.fetch_quota(account['name'])
-        self.grok_accounts_panel.refresh()
         self.queue_policy()
         if not self.activity_started:
             self.activity_started = True
@@ -1378,7 +1389,6 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         return tr('account_enabled_status')
 
     def uptime_text(self, provider, name):
-        provider = {'grok': 'xai'}.get(provider, provider)
         value = self.account_uptime.display(provider, name)
         if not value:
             return ''
@@ -1401,7 +1411,6 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
             ('antigravity', 'Google', self.items),
             ('codex', 'ChatGPT', self.chatgpt_accounts),
             ('claude', 'Claude', self.claude_accounts_panel.rows if hasattr(self, 'claude_accounts_panel') else []),
-            ('xai', 'Grok', self.grok_accounts_panel.rows if hasattr(self, 'grok_accounts_panel') else []),
         ]
         for provider, title, accounts in providers:
             for account in accounts or []:
@@ -1472,6 +1481,13 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         error = cached.get('error') or cached.get('data', {}).get('summary_error')
         if error:
             parts.append(display_reason(error))
+        for probe in self.google_startup_probes.get(account['name'], []):
+            state = self.controller.quota_starts.get(account['name'] + ':' + probe['kind'], {})
+            if probe['status'] != 200:
+                message = tr('google_startup_failed', status=probe['status'])
+            else:
+                message = tr('google_startup_confirmed' if state.get('weekly_started') is True else 'google_startup_unconfirmed')
+            parts.append(('Gemini' if probe['kind'] == 'gemini' else 'Claude / GPT') + ': ' + message)
         last_model = self.last_account_model(account['name'])
         if last_model:
             parts.append(last_model)
@@ -1801,6 +1817,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         if not account:
             return
         self.quota_pending.add(name)
+        startup = name not in self.google_startup_checked
         def fetch():
             try:
                 data = self.controller.quotas(account)
@@ -1814,20 +1831,32 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
                             last_used[family] = max(last_used.get(family, 0), at)
                         except (ValueError, TypeError):
                             pass
-                started = self.controller.start_full_quota_windows(account, data, last_used=last_used)
+                started = self.controller.start_full_quota_windows(account, data, last_used=last_used, startup=startup)
                 if any(r['status'] == 200 for r in started):
                     try:
-                        data = self.controller.quotas(account)
+                        fresh = self.controller.quotas(account)
+                        self.controller.confirm_quota_starts(account, started, data, fresh)
+                        data = fresh
                     except AccountError:
                         pass
-                return data, None
+                return data, None, started
             except AccountError as exc:
-                return None, str(exc)
+                return None, str(exc), []
             except Exception:
-                return None, tr('quota_load_error')
+                return None, tr('quota_load_error'), []
         def done(result):
             self.quota_pending.discard(name)
-            data, error = result
+            data, error, started = result
+            if data is not None and not data.get('summary_error'):
+                self.google_startup_checked.add(name)
+            if startup and started:
+                self.google_startup_probes[name] = started
+                probes = [r for rows in self.google_startup_probes.values() for r in rows]
+                ok = sum(r['status'] == 200 for r in probes)
+                confirmed = sum(self.controller.quota_starts.get(account_name + ':' + r['kind'], {}).get('weekly_started') is True
+                                for account_name, rows in self.google_startup_probes.items() for r in rows)
+                self.show_notice(tr('google_startup_report', accounts=len(self.google_startup_probes),
+                                    ok=ok, confirmed=confirmed, failed=len(probes) - ok), 'warning' if len(probes) != ok else 'green')
             old = self.quota_cache.get(name, {})
             if data is not None:
                 self.token_capacity.observe_quota('antigravity', name, data.get('subscription'), data.get('groups', []))
@@ -2881,7 +2910,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         visibility = {}
         for provider, title in [('google', 'Google · Gemini / Claude'), ('api', tr('tab_api_keys')),
                                 ('codex', 'ChatGPT'), ('claude', 'Claude subscription'),
-                                ('grok', tr('tab_grok_accounts'))]:
+                                ]:
             checkbox = QCheckBox(title)
             checkbox.setObjectName('serviceVisibility_' + provider)
             checkbox.setChecked(self.service_visible(provider))
@@ -2947,7 +2976,6 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
                 self.render_policy()
                 self.render_chatgpt_accounts()
                 self.claude_accounts_panel.render()
-                self.grok_accounts_panel.render()
             self.apply_service_visibility()
             self.check_account_alerts()
         save.clicked.connect(apply)
@@ -3012,7 +3040,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         journal = list(self.journal_filter._buttons).index(self.journal_filter.get())
         # Preserve provider panels and pending OAuth work while rebuilding labels.
         self.claude_accounts_panel.setParent(None)
-        self.grok_accounts_panel.setParent(None)
+        self.team_panel.setParent(None)
         old = self.takeCentralWidget()
         old.hide()
         old.deleteLater()
@@ -3107,6 +3135,7 @@ class App(PolicyControlsMixin, ChatGPTPanelMixin, QMainWindow):
         QApplication.quit()
 
     def _shutdown_ui(self):
+        self.team_panel.shutdown()
         self.closed = True
         self._quota_timer.stop()
         self._countdown_timer.stop()

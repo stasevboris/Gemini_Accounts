@@ -108,8 +108,8 @@ class ClientCatalogTests(unittest.TestCase):
         self.entries.append({'alias': legacy, 'name': 'gemini-3.5-flash-low', 'fork': True})
         self.client.apply(['claude_desktop'])
         models = self.client.read_json(self.client.paths()['claude_desktop'][2])['inferenceModels']
-        self.assertEqual(len(models), 5)
-        self.assertEqual(len({e['name'] for e in models}), 5)
+        self.assertEqual(len(models), 6)
+        self.assertEqual(len({e['name'] for e in models}), 6)
         self.assertEqual([e['labelOverride'] for e in models if e['labelOverride'].startswith('Gemini')],
                          ['Gemini · 3.8 Flash High', 'Gemini · 3.8 Flash Medium', 'Gemini · 3.8 Flash Low'])
         self.assertEqual(sum(e['isFamilyDefault'] for e in models), 3)
@@ -127,7 +127,7 @@ class ClientCatalogTests(unittest.TestCase):
         self.assertEqual(settings['permissions'], {'allow': ['Read']})
         self.assertTrue(settings['modelPicker']['replaceBuiltInOptions'])
         options = settings['modelPicker']['options']
-        self.assertEqual(len(options), 8)
+        self.assertEqual(len(options), 9)
         self.assertIn(settings['env']['ANTHROPIC_MODEL'], {e['model'] for e in options})
         self.assertEqual({e['label'] for e in options if e['label'].startswith('ChatGPT')},
                          {'ChatGPT · gpt-6-luna', 'ChatGPT · gpt-image-2'})
@@ -149,7 +149,7 @@ class ClientCatalogTests(unittest.TestCase):
         updated = self.client.read_json(path)
         self.assertEqual(updated['inferenceGatewayApiKey'], preset['inferenceGatewayApiKey'])
         self.assertEqual(updated['coworkEgressAllowedHosts'], ['example.com'])
-        self.assertEqual(len(updated['inferenceModels']), 6)
+        self.assertEqual(len(updated['inferenceModels']), 7)
         self.assertTrue(any(e['name'] == 'custom-model' for e in updated['inferenceModels']))
         before = path.read_bytes()
         self.assertFalse(self.client.reconcile_desktop_routes())

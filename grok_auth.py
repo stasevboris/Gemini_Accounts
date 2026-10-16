@@ -1,10 +1,24 @@
 """Grok/xAI OAuth account access through the local CLIProxyAPI management API."""
+import hashlib
+import re
 import urllib.parse
 
 from backend import AccountError
 
 
+def desktop_model_id(model):
+    """Stable client route; the UI label retains the actual Grok model name."""
+    ident = int.from_bytes(hashlib.sha256(model.encode()).digest()[:12], 'big')
+    return f'claude-sonnet-4-5-xai-{ident}'
+
+
+def is_desktop_model(model):
+    return isinstance(model, str) and bool(re.fullmatch(r'claude-sonnet-4-5-xai-\d{1,29}', model))
+
+
 class GrokAuth:
+    NAME = 'Grok'
+    AUTH_PATH = '/xai-auth-url'
     PROVIDER = 'xai'
     SAFE_LOGIN_HOSTS = {'accounts.x.ai', 'auth.x.ai'}
     ACCOUNT_FIELDS = ('name', 'auth_index', 'provider', 'type', 'email', 'disabled',
@@ -41,10 +55,10 @@ class GrokAuth:
 
     def begin_login(self):
         try:
-            result = self.controller.request('/xai-auth-url?is_webui=true')
+            result = self.controller.request(self.AUTH_PATH + '?is_webui=true')
         except AccountError as error:
             if '404' in str(error):
-                raise AccountError('This local gateway does not support Grok sign-in. Update the app and retry.') from None
+                raise AccountError('This local gateway does not support ' + self.NAME + ' sign-in. Update the app and retry.') from None
             raise
         url = result.get('url', '')
         state = result.get('state', '')

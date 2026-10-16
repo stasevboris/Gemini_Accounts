@@ -11,6 +11,33 @@ from installer import install
 
 
 class IntegrationTests(unittest.TestCase):
+    def test_team_connection_keeps_current_models_other_mcp_servers_and_exact_backups(self):
+        from team_service import TEAM_MODEL
+        self.client.apply(['claude_cli', 'claude_desktop'])
+        cli, mcp_path = self.client.paths()['claude_cli']
+        desktop = self.client.paths()['claude_desktop'][0]
+        settings = self.client.read_json(cli)
+        settings['model'] = 'current-user-model'
+        settings['env']['ANTHROPIC_MODEL'] = 'current-user-model'
+        self.client.write_json(cli, settings)
+        self.client.write_json(mcp_path, {'projects': {'test': {'keep': True}}, 'mcpServers': {'other': {'command': 'other-server'}}})
+        settings = self.client.read_json(desktop)
+        settings.setdefault('mcpServers', {})['other'] = {'command': 'keep-server'}
+        self.client.write_json(desktop, settings)
+        self.client.connect_team_clients()
+        self.client.connect_team_clients()
+        settings = self.client.read_json(cli)
+        self.assertEqual(settings['env']['ANTHROPIC_MODEL'], 'current-user-model')
+        self.assertEqual(settings['model'], 'current-user-model')
+        self.assertEqual(sum(o['model'] == TEAM_MODEL for o in settings['modelPicker']['options']), 1)
+        mcp = self.client.read_json(mcp_path)
+        self.assertTrue(mcp['projects']['test']['keep'])
+        self.assertEqual(mcp['mcpServers']['other']['command'], 'other-server')
+        self.assertNotIn('local-test-key', json.dumps(mcp['mcpServers']['gemini-accounts-team']))
+        desktop_data = self.client.read_json(desktop)
+        self.assertEqual(desktop_data['mcpServers']['other']['command'], 'keep-server')
+        picker = self.client.read_json(self.client.paths()['claude_desktop'][2])['inferenceModels']
+        self.assertEqual(sum(o['name'] == TEAM_MODEL for o in picker), 1)
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -148,15 +175,10 @@ class IntegrationTests(unittest.TestCase):
         self.client.refresh_desktop_model_labels()
         self.assertEqual(self.client.read_json(path)['coworkEgressAllowedHosts'], [])
 
-    def test_grok_models_are_discovered_from_native_provider_without_fake_quota(self):
+    def test_removed_grok_provider_is_not_published(self):
         self.controller.key = 'local-key'
-        self.controller.grok_model_choices = lambda: ['grok-4', 'grok-4-mini']
-        self.assertEqual(self.client.grok_model_choices(), ['grok-4', 'grok-4-mini'])
-        entries = self.client.grok_model_entries()
-        self.assertEqual([entry['name'] for entry in entries], ['grok-4', 'grok-4-mini'])
-        self.assertTrue(all(entry['labelOverride'].startswith('Grok · ') for entry in entries))
-        self.controller.grok_model_choices = lambda: (_ for _ in ()).throw(AccountError('not supported'))
-        self.assertEqual(self.client.grok_model_choices(), [])
+        self.assertFalse(hasattr(self.client, 'grok_model_choices'))
+        self.assertFalse(hasattr(self.client, 'grok_model_entries'))
 
     def test_installer_creates_fresh_keys_and_retains_config_on_update(self):
         payload = self.root / 'payload'

@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+import sys
 import tomllib
 from pathlib import Path
 
@@ -150,10 +151,12 @@ class Integrations:
         from api_keys import catalog, desktop_model_id, is_desktop_model
         from chatgpt_auth import desktop_model_id as oauth_id, is_desktop_model as is_oauth
         from claude_auth import desktop_model_id as claude_id, is_desktop_model as is_claude
+        from grok_auth import is_desktop_model as is_grok
+        from kimi_auth import is_desktop_model as is_kimi
         with self.lock:
             payload = self.controller.request('/oauth-model-alias').get('oauth-model-alias') or {}
             entries = [dict(entry) for entry in payload.get('antigravity', [])]
-            updated = [entry for entry in entries if not (is_desktop_model(entry.get('alias')) or is_oauth(entry.get('alias')))]
+            updated = [entry for entry in entries if not (is_desktop_model(entry.get('alias')) or is_oauth(entry.get('alias')) or is_grok(entry.get('alias')) or is_kimi(entry.get('alias')))]
             updated += [{'alias': desktop_model_id(entry), 'name': entry['id'], 'fork': True,
                          'force-mapping': True, 'display-name': entry['label']}
                         for entry in catalog(self.controller)]
@@ -171,6 +174,13 @@ class Integrations:
             if sorted(updated, key=lambda e: e.get('alias', '')) != sorted(entries, key=lambda e: e.get('alias', '')):
                 self.controller.request('/oauth-model-alias', 'PATCH', {'provider': 'claude', 'aliases': updated})
                 changed = True
+            # Remove legacy Grok/Kimi routes from the published desktop catalog.
+            for provider in ('xai', 'kimi', 'kimi-ai'):
+                legacy = payload.get(provider, [])
+                updated = [e for e in legacy if not (is_grok(e.get('alias')) or is_kimi(e.get('alias')))]
+                if legacy != updated:
+                    self.controller.request('/oauth-model-alias', 'PATCH', {'provider': provider, 'aliases': updated})
+                    changed = True
             return changed
 
     def detected(self):
@@ -184,7 +194,7 @@ class Integrations:
         library = self.local / 'Claude-3p' / 'configLibrary'
         preset_id = self.legacy_desktop_preset() or PRESET_ID
         return {
-            'claude_cli': [self.home / '.claude' / 'settings.json'],
+            'claude_cli': [self.home / '.claude' / 'settings.json', self.home / '.claude.json'],
             'codex': [self.home / '.codex' / 'config.toml', self.home / '.codex' / 'gemini-accounts.config.toml',
                       self.home / '.codex' / 'gemini-accounts-models.json'],
             'claude_desktop': [self.local / 'Claude-3p' / 'claude_desktop_config.json',
@@ -219,6 +229,8 @@ class Integrations:
         from api_keys import is_model
         from chatgpt_auth import is_desktop_model as is_oauth
         from claude_auth import is_desktop_model as is_claude
+        from grok_auth import is_desktop_model as is_grok
+        from kimi_auth import is_desktop_model as is_kimi
         catalog = self.read_json(self.controller.proxy_dir / 'cliproxy-models.json')
         google_names = {m['id'] for m in catalog.get('antigravity', [])
                         if isinstance(m, dict) and isinstance(m.get('id'), str)}
@@ -228,11 +240,12 @@ class Integrations:
         def managed(entry):
             name = entry.get('name', '')
             label = entry.get('labelOverride', '')
-            return (is_model(name) or is_oauth(name) or is_claude(name) or
+            from team_service import TEAM_MODEL
+            return (name == TEAM_MODEL or is_model(name) or is_oauth(name) or is_claude(name) or is_grok(name) or is_kimi(name) or
                     '-4-5-ga-' in name or name in google_names and label.startswith(('Gemini', 'Claude')) or
-                    name.startswith('grok-') and label.startswith('Grok · '))
+                    name.startswith(('grok-', 'kimi-')) and label.startswith(('Grok · ', 'Kimi · ', 'Kimi.ai · ')))
         custom = [e for e in original if isinstance(e, dict) and not managed(e)]
-        preset['inferenceModels'] = custom + google + self.api_model_entries() + self.chatgpt_model_entries() + self.claude_subscription_model_entries() + self.grok_model_entries()
+        preset['inferenceModels'] = custom + [self.team_model_entry()] + google + self.api_model_entries() + self.chatgpt_model_entries() + self.claude_subscription_model_entries()
         routes_changed = False
         if self.controller.key:
             routes_changed = self.configure_desktop_routes(self.google_client_models(), replace=False)
@@ -250,6 +263,60 @@ class Integrations:
                  'anthropicFamilyTier': 'haiku' if 'haiku' in entry['model'] else 'opus' if 'opus' in entry['model'] else 'sonnet',
                  'isFamilyDefault': False, 'supports1m': False, 'prefer1m': False}
                 for entry in catalog(self.controller)]
+
+    def team_model_entry(self):
+        from team_service import TEAM_MODEL
+        return {'name': TEAM_MODEL, 'labelOverride': 'Команда агентов' if self.controller.preferences.get('language') == 'ru' else 'Agent team',
+                'anthropicFamilyTier': 'sonnet', 'isFamilyDefault': False, 'supports1m': False, 'prefer1m': False}
+
+    def team_mcp_entry(self):
+        from runtime import VERSION
+        candidates = [self.controller.data_dir / 'team-mcp' / VERSION / 'GeminiTeamMCP.exe',
+                      self.local / 'GeminiAccounts' / 'team-mcp' / VERSION / 'GeminiTeamMCP.exe',
+                      self.controller.data_dir / 'GeminiTeamMCP.exe']
+        executable = next((p for p in candidates if p.is_file()), candidates[0])
+        if executable.is_file():
+            command, args = str(executable), []
+        elif not getattr(sys, 'frozen', False):
+            command, args = sys.executable, [str(Path(__file__).with_name('team_mcp.py'))]
+        else:
+            raise AccountError('Install the current Gemini Accounts build with GeminiTeamMCP.exe first.')
+        return {'type': 'stdio', 'command': command, 'args': args,
+                'env': {'GEMINI_TEAM_DATA_DIR': str(self.controller.data_dir), 'GEMINI_TEAM_PROXY_DIR': str(self.controller.proxy_dir)}}
+
+    def connect_team_clients(self):
+        """Add team entries only to already connected clients; keep their model/env."""
+        changed = []
+        with self.lock:
+            entry = self.team_mcp_entry()
+            if self.legacy_desktop_preset():
+                desktop = self.paths()['claude_desktop'][0]
+                self.remember([desktop])
+                settings = self.read_json(desktop)
+                settings.setdefault('mcpServers', {})['gemini-accounts-team'] = entry
+                self.write_json(desktop, settings)
+                self.refresh_desktop_model_labels()
+                changed.append('claude_desktop')
+            settings_path, mcp_path = self.paths()['claude_cli']
+            settings = self.read_json(settings_path)
+            if settings.get('env', {}).get('ANTHROPIC_BASE_URL', '').rstrip('/') == 'http://127.0.0.1:8317':
+                self.remember([settings_path, mcp_path])
+                options = settings.setdefault('modelPicker', {}).setdefault('options', [])
+                from grok_auth import is_desktop_model as is_grok
+                from kimi_auth import is_desktop_model as is_kimi
+                options[:] = [o for o in options if not (is_grok(o.get('model')) or is_kimi(o.get('model'))
+                    or str(o.get('label', '')).startswith(('Grok · ', 'Kimi · ', 'Kimi.ai · ')))]
+                model = self.team_model_entry()
+                options[:] = [o for o in options if o.get('model') != model['name']]
+                options.append({'model': model['name'], 'label': model['labelOverride']})
+                mcp = self.read_json(mcp_path)
+                mcp.setdefault('mcpServers', {})['gemini-accounts-team'] = entry
+                self.write_json(settings_path, settings)
+                self.write_json(mcp_path, mcp)
+                changed.append('claude_cli')
+        if not changed:
+            raise AccountError('Connect Claude Desktop or Claude Code under Connections first.')
+        return changed
 
     def chatgpt_model_choices(self):
         if not self.controller.key:
@@ -272,22 +339,6 @@ class Integrations:
             return self.controller.claude_subscription_model_choices()
         except (AccountError, OSError, ValueError, KeyError):
             return []
-
-    def grok_model_choices(self):
-        if not self.controller.key:
-            return []
-        try:
-            choices = self.controller.grok_model_choices()
-            return choices if isinstance(choices, list) else []
-        except (AccountError, OSError, ValueError, KeyError, TypeError, AttributeError):
-            return []
-
-    def grok_model_entries(self):
-        from model_names import model_name
-        return [{'name': model, 'labelOverride': 'Grok · ' + model_name(model, {}),
-                 'anthropicFamilyTier': 'sonnet', 'isFamilyDefault': False,
-                 'supports1m': False, 'prefer1m': False}
-                for model in self.grok_model_choices()]
 
     def claude_subscription_model_entries(self):
         from claude_auth import desktop_model_id
@@ -376,8 +427,10 @@ class Integrations:
                     else:
                         atomic_write(path, data)
                 if alias_before is not None:
-                    for provider in ('antigravity', 'claude'):
-                        self.controller.request('/oauth-model-alias', 'PATCH', {'provider': provider, 'aliases': alias_before.get(provider, [])})
+                    live = self.controller.request('/oauth-model-alias').get('oauth-model-alias') or {}
+                    for provider in ('antigravity', 'claude', 'xai', 'kimi', 'kimi-ai'):
+                        if live.get(provider) != alias_before.get(provider):
+                            self.controller.request('/oauth-model-alias', 'PATCH', {'provider': provider, 'aliases': alias_before.get(provider, [])})
                 raise
         return clients
 
@@ -404,8 +457,8 @@ class Integrations:
             'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY': '1',
             'API_TIMEOUT_MS': '604800000', 'CLAUDE_ENABLE_STREAM_WATCHDOG': '0',
         })
-        entries = (self.google_client_model_entries() + self.api_model_entries() +
-                   self.chatgpt_model_entries() + self.claude_subscription_model_entries() + self.grok_model_entries())
+        entries = ([self.team_model_entry()] + self.google_client_model_entries() + self.api_model_entries() +
+                   self.chatgpt_model_entries() + self.claude_subscription_model_entries())
         settings['modelPicker'] = {'replaceBuiltInOptions': True,
             'options': [{'model': e['name'] + ('[1m]' if e.get('supports1m') else ''),
                          'label': e['labelOverride']} for e in entries]}
@@ -413,6 +466,10 @@ class Integrations:
             if entry['model'] == 'claude-opus-4-6-thinking':
                 entry['behavesAs'] = 'claude-opus-4-6'
         self.write_json(path, settings)
+        mcp_path = self.paths()['claude_cli'][1]
+        mcp = self.read_json(mcp_path)
+        mcp.setdefault('mcpServers', {})['gemini-accounts-team'] = self.team_mcp_entry()
+        self.write_json(mcp_path, mcp)
 
     def provider_toml(self, key):
         return '\n'.join([
@@ -463,22 +520,22 @@ class Integrations:
             return False
         from claude_auth import desktop_model_id
         subscription = {desktop_model_id(model): model for model in self.claude_subscription_model_choices()}
-        for model in choices['gemini'] + choices['claude'] + self.chatgpt_model_choices() + list(subscription) + self.grok_model_choices():
+        for model in choices['gemini'] + choices['claude'] + self.chatgpt_model_choices() + list(subscription):
             if model in existing:
                 continue
             entry = copy.deepcopy(template)
-            family = ('Grok' if model.startswith('grok-') else 'Gemini' if model.startswith('gemini-')
+            family = ('Gemini' if model.startswith('gemini-')
                       else 'ChatGPT' if model.startswith('gpt-') else 'Claude')
             window = CONTEXT_WINDOWS.get(model, 200000)
             display = ('Claude subscription · ' + model_name(subscription[model], {})) if model in subscription else family + ' · ' + model_name(model, {})
             description = ('Claude subscription' if model in subscription else 'ChatGPT' if model.startswith('gpt-')
-                           else 'Grok' if model.startswith('grok-') else 'Google subscription') + ' via Gemini Accounts'
+                           else 'Google subscription') + ' via Gemini Accounts'
             entry.update(slug=model, display_name=display, description=description, priority=50,
                          model_messages={}, base_instructions='You are a helpful coding assistant.',
                          context_window=window, max_context_window=window,
                          additional_speed_tiers=[], service_tiers=[], availability_nux=None, upgrade=None)
             effort = (template.get('default_reasoning_level', 'medium') if model.startswith('gpt-') else
-                      'medium' if model.startswith('grok-') else reasoning_level(model))
+                      reasoning_level(model))
             entry['default_reasoning_level'] = effort
             entry['supported_reasoning_levels'] = copy.deepcopy(template.get('supported_reasoning_levels', [])) if model.startswith('gpt-') else [{'effort': effort, 'description': effort.title()}]
             models.append(entry)
@@ -499,8 +556,8 @@ class Integrations:
             'inferenceProvider': 'gateway', 'inferenceGatewayApiKey': key,
             'inferenceGatewayBaseUrl': 'http://127.0.0.1:8317',
             'claudeAiImport': {'bannerBehavior': 'detect', 'exportEnabled': True, 'enabled': True},
-            'inferenceModels': (self.google_client_model_entries() + self.api_model_entries() +
-                self.chatgpt_model_entries() + self.claude_subscription_model_entries() + self.grok_model_entries()),
+            'inferenceModels': ([self.team_model_entry()] + self.google_client_model_entries() + self.api_model_entries() +
+                self.chatgpt_model_entries() + self.claude_subscription_model_entries()),
         })
         self.default_desktop_web_access(preset_data)
         self.write_json(preset, preset_data)
@@ -513,6 +570,7 @@ class Integrations:
         self.write_json(meta_path, meta)
         settings = self.read_json(desktop)
         settings['deploymentMode'] = '3p'
+        settings.setdefault('mcpServers', {})['gemini-accounts-team'] = self.team_mcp_entry()
         self.write_json(desktop, settings)
 
     def restore(self):

@@ -648,12 +648,17 @@ class Controller:
         return {'models': result, 'groups': groups, 'summary_error': summary_error,
                 'subscription': self.subscription(account)}
 
-    def start_full_quota_windows(self, account, quotas, now=None, last_used=None):
-        """Start a fresh five-hour window once per account/provider, using one output token."""
+    def start_full_quota_windows(self, account, quotas, now=None, last_used=None, startup=False):
+        """Start full quota windows with a bounded request pinned by auth_index.
+
+        A fresh full weekly bucket can be primed immediately at app startup.
+        Ordinary five-hour maintenance retains its grace period and backoff.
+        """
         if account.get('disabled') or account.get('access_issue'):
             return []
         now = time.time() if now is None else now
         results = []
+        registered = None
         for group in quotas.get('groups', []):
             kind = group.get('kind')
             from quota_limits import blocked_families
@@ -661,17 +666,36 @@ class Controller:
                 continue
             if kind not in ('gemini', 'claude'):
                 continue
-            # Never fall back to expensive Pro/Sonnet/Opus for a timer trigger.
-            model = 'gemini-3-flash' if kind == 'gemini' else 'gpt-oss-120b-medium'
-            if model not in quotas.get('models', {}):
-                continue
             buckets = {b.get('window'): b for b in group.get('buckets', [])}
             remaining = buckets.get('5h', {}).get('remaining')
             if remaining is None:
                 continue
+            weekly = buckets.get('weekly', {}).get('remaining')
+            prime_weekly = startup and weekly == 1 and remaining > 0
+            if remaining != 1 and not prime_weekly:
+                # Continue below to rearm a previously used five-hour bucket.
+                model = None
+            else:
+                if registered is None:
+                    registered = set(self.models(account))
+                available = registered.intersection(quotas.get('models', {}))
+                # Legacy Flash/Lite greetings may be unmetered. Use a real,
+                # registered low-effort model; never promote to Pro/Opus/Sonnet.
+                candidates = sorted(m for m in available if m.startswith('gemini-')
+                    and '-flash-' in m and m.endswith('-low') and 'lite' not in m)
+                preferred = ['gemini-3.8-flash-low', 'gemini-3.5-flash-extra-low', *candidates]
+                if kind == 'claude':
+                    preferred = ['gpt-oss-120b-medium']
+                model = next((m for m in preferred if m in available), None)
+                if not model:
+                    continue
             key = account['name'] + ':' + kind
             with self.quota_start_lock:
                 state = self.quota_starts.setdefault(key, {'armed': True})
+                if model and state.get('model') == 'gemini-3-flash' and state.get('probe_policy') != 2:
+                    # Replace old successful-but-unmetered probes once.
+                    state.update(armed=True, failures=0, attempt_at=0, probe_policy=2)
+                    state.pop('full_since', None)
                 if state.get('endpoint') != 'daily':
                     # Failed probes on the production host must not exhaust the
                     # retry budget for the working Antigravity endpoint.
@@ -679,13 +703,13 @@ class Controller:
                         state.update(armed=True, failures=0, attempt_at=0)
                     state['endpoint'] = 'daily'
                     atomic_write(self.quota_start_path, json.dumps(self.quota_starts).encode())
-                if remaining < 1:
+                if remaining < 1 and not prime_weekly:
                     if not state.get('armed') or 'full_since' in state:
                         state.update(armed=True, failures=0)
                         state.pop('full_since', None)
                         atomic_write(self.quota_start_path, json.dumps(self.quota_starts).encode())
                     continue
-                if remaining != 1 or buckets.get('weekly', {}).get('remaining') == 0:
+                if (remaining != 1 and not prime_weekly) or weekly == 0:
                     continue
                 last = state.get('attempt_at', 0)
                 retry = state.get('status') != 200 and state.get('failures', 0) < 3 and now - last >= 600
@@ -702,14 +726,17 @@ class Controller:
                     state.pop('full_since', None)
                     atomic_write(self.quota_start_path, json.dumps(self.quota_starts).encode())
                     continue
-                if now - state['full_since'] < 180:
+                if now - state['full_since'] < 180 and not prime_weekly:
                     continue
                 # Persist the claim before sending, including across app restarts.
-                state.update(armed=False, attempt_at=now, status='pending', model=model)
+                state.update(armed=False, attempt_at=now, status='pending', model=model,
+                             weekly_started=None, window_started=None)
                 atomic_write(self.quota_start_path, json.dumps(self.quota_starts).encode())
             payload = {'project': account.get('project_id') or 'aicode-consumers', 'model': model,
+                'userAgent': 'antigravity', 'requestType': 'agent', 'requestId': 'agent-' + secrets.token_hex(16),
                 'request': {'contents': [{'role': 'user', 'parts': [{'text': 'Hi'}]}],
-                            'generationConfig': {'maxOutputTokens': 1}}}
+                            'sessionId': secrets.token_hex(16),
+                            'generationConfig': {'maxOutputTokens': 32 if kind == 'gemini' else 1}}}
             try:
                 response = self.request('/api-call', 'POST', {'auth_index': account['auth_index'], 'method': 'POST',
                     'url': 'https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent',
@@ -726,6 +753,25 @@ class Controller:
                 atomic_write(self.quota_start_path, json.dumps(self.quota_starts).encode())
             results.append({'kind': kind, 'status': status})
         return results
+
+    def confirm_quota_starts(self, account, started, before, after):
+        """HTTP success and a running weekly quota are distinct observations."""
+        def fraction(data, kind, window):
+            return next((b.get('remaining') for g in data.get('groups', []) if g.get('kind') == kind
+                         for b in g.get('buckets', []) if b.get('window') == window), None)
+        with self.quota_start_lock:
+            for result in started:
+                if result['status'] != 200:
+                    continue
+                kind = result['kind']
+                state = self.quota_starts.get(account['name'] + ':' + kind)
+                if not state:
+                    continue
+                for window, field in [('5h', 'window_started'), ('weekly', 'weekly_started')]:
+                    old, new = fraction(before, kind, window), fraction(after, kind, window)
+                    observed = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (old, new))
+                    state[field] = new < old if observed else None
+            atomic_write(self.quota_start_path, json.dumps(self.quota_starts).encode())
 
     def _set_disabled(self, account, disabled):
         return self.request('/auth-files/status', 'PATCH', {'name': account['name'], 'auth_index': account.get('auth_index'), 'disabled': disabled})

@@ -12,8 +12,40 @@ from locales import tr, LANGUAGES, current_language, set_language, display_reaso
 from themes import DARK, LIGHT
 from integrations import Integrations
 
+REAL_FETCH_QUOTA = App.fetch_quota
+
 
 class QuotaUITests(unittest.TestCase):
+    def test_google_startup_probe_runs_once_after_fresh_quota_for_each_account(self):
+        w = self.window
+        account = {'name': 'startup-test', 'auth_index': 'startup-idx', 'disabled': False}
+        w.items = [account]
+        w.work = lambda operation, done, **kwargs: done(operation())
+        quota = {'models': {}, 'groups': []}
+        with patch.object(self.controller, 'quotas', return_value=quota), \
+                patch.object(self.controller, 'start_full_quota_windows', return_value=[]) as start:
+            REAL_FETCH_QUOTA(w, account['name'])
+            self.assertTrue(start.call_args.kwargs['startup'])
+            w.quota_cache[account['name']]['checked'] = 0
+            REAL_FETCH_QUOTA(w, account['name'])
+            self.assertFalse(start.call_args.kwargs['startup'])
+            self.assertEqual(start.call_count, 2)
+
+    def test_google_startup_probe_waits_for_fresh_quota_after_a_load_error(self):
+        w = self.window
+        account = {'name': 'startup-test', 'auth_index': 'startup-idx', 'disabled': False}
+        w.items = [account]
+        w.work = lambda operation, done, **kwargs: done(operation())
+        with patch.object(self.controller, 'quotas', side_effect=[AccountError('Test quota failure'), {'models': {}, 'groups': []}]), \
+                patch.object(self.controller, 'start_full_quota_windows', return_value=[]) as start:
+            REAL_FETCH_QUOTA(w, account['name'])
+            self.assertNotIn(account['name'], w.google_startup_checked)
+            start.assert_not_called()
+            w.quota_cache[account['name']]['checked'] = 0
+            REAL_FETCH_QUOTA(w, account['name'])
+            self.assertTrue(start.call_args.kwargs['startup'])
+            self.assertIn(account['name'], w.google_startup_checked)
+
     def test_google_callback_failure_allows_retry_without_leaking_code(self):
         w = self.window
         w.work = lambda operation, done, **kwargs: done(operation())
@@ -42,18 +74,11 @@ class QuotaUITests(unittest.TestCase):
         self.assertEqual(w.pending_login[0], 'new-state')
         w.pending_login = None
 
-    def test_grok_panel_has_status_and_uptime_without_synthetic_quota_bars(self):
+    def test_removed_providers_are_not_rendered_as_tabs(self):
         w = self.window
-        rows = [{'name': 'grok-test', 'email': 'grok@example.com', 'provider': 'xai',
-                 'status': 'active', 'quota': {'windows': [], 'plan_type': 'SuperGrok'}}]
-        w.account_uptime.update_many('xai', rows)
-        panel = w.grok_accounts_panel
-        panel.rows = rows
-        panel.render()
+        self.assertFalse(hasattr(w, 'grok_accounts_panel'))
+        self.assertFalse(hasattr(w, 'kimi_accounts_panel'))
         self.assertEqual(w.view_stack.count(), 6)
-        self.assertEqual(panel.cards.cards['grok-test']['tracks'], {})
-        self.assertIn('SuperGrok', panel.cards.cards['grok-test']['status'].text())
-        self.assertTrue(panel.cards.cards['grok-test']['uptime'].text())
         self.assertEqual(w.capacity_table.columnCount(), 6)
         self.assertEqual(w.forecast_table.columnCount(), 7)
 
@@ -342,6 +367,21 @@ class QuotaUITests(unittest.TestCase):
             self.window.edit_api_profile(api_keys.profiles(self.controller)[0])
         self.assertEqual(captured, ['\n'.join(original)])
         self.assertEqual(api_keys.profiles(self.controller)[0]['models'], original)
+
+    def test_flua_preset_uses_api_host_and_anthropic_protocol(self):
+        import api_keys
+        def submit():
+            dialog = self.qapp.activeModalWidget()
+            provider = dialog.findChild(QComboBox, 'apiProviderInput')
+            provider.setCurrentIndex(provider.findData('flua'))
+            dialog.findChild(QLineEdit, 'apiKeyInput').setText('flua-test-credential')
+            dialog.findChild(QPushButton, 'apiSaveButton').click()
+        QTimer.singleShot(20, submit)
+        with patch.object(self.window, 'api_profiles_changed'), patch('api_keys.verify_profile', return_value={'model': 'claude-opus-5-5'}):
+            self.window.edit_api_profile()
+        row = api_keys.profiles(self.controller)[0]
+        self.assertEqual((row['kind'], row['base_url'], row['models']),
+                         ('anthropic', 'https://api.flua.ink', ['claude-opus-5-5']))
 
     def test_weekly_groups_hide_only_card_rows_and_pool_tracks_real_blocks(self):
         self.load_accounts()

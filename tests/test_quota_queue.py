@@ -64,6 +64,46 @@ class Mock(BaseHTTPRequestHandler):
 
 
 class QueueTests(unittest.TestCase):
+    def test_update_is_blocked_while_a_team_is_between_provider_requests(self):
+        from unittest.mock import patch
+        with patch('quota_queue.team_active', return_value=True):
+            self.client.request('POST', '/v0/management/update-lock', b'', {'Authorization': 'Bearer admin'})
+            response = self.client.getresponse()
+            self.assertEqual(response.status, 409)
+            response.read()
+            self.assertFalse(self.gate.updating)
+
+    def test_grok_client_alias_keeps_history_tools_and_xai_quota_scope(self):
+        from grok_auth import desktop_model_id
+        route = desktop_model_id('grok-4.7')
+        self.backend.model_aliases = []
+        original_get = Mock.do_GET
+        def get(handler):
+            if handler.path == '/v0/management/oauth-model-alias':
+                data = json.dumps({'oauth-model-alias': {'xai': [{'alias': route, 'name': 'grok-4.7'}]}}).encode()
+                handler.send_response(200)
+                handler.send_header('Content-Length', str(len(data)))
+                handler.end_headers()
+                handler.wfile.write(data)
+            else:
+                original_get(handler)
+        from unittest.mock import patch
+        google = account('grok-4.7', seconds=200)
+        google['cooldowns'][0]['scope'] = 'credential'
+        self.backend.files = [google, {'provider': 'xai', 'name': 'grok'}]
+        payload = {'model': route, 'stream': True, 'max_tokens': 32,
+                   'messages': [{'role': 'user', 'content': 'Remember blue'},
+                                {'role': 'assistant', 'content': 'OK'},
+                                {'role': 'user', 'content': 'Which color?'}],
+                   'tools': [{'name': 'calculator', 'input_schema': {'type': 'object'}}]}
+        with patch.object(Mock, 'do_GET', get):
+            self.client.request('POST', '/v1/messages', json.dumps(payload), {'Authorization': 'Bearer client'})
+            response = self.client.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn(b'OK', response.read())
+            self.assertEqual(self.backend.last_request, payload)
+            self.assertEqual(self.gate.aliases[route], 'grok-4.7')
+
     def test_grok_quota_wait_is_scoped_to_xai_accounts(self):
         google = account('grok-4', seconds=200)
         google['cooldowns'][0]['scope'] = 'credential'
@@ -213,6 +253,24 @@ class QueueTests(unittest.TestCase):
         request = {'system': SDK_IDENTITY}
         self.assertTrue(normalize_sdk_system(request))
         self.assertNotIn('system', request)
+
+    def test_trailing_thinking_history_is_removed_without_touching_tools_or_text(self):
+        from quota_queue import normalize_thinking_history
+        request = {'messages': [
+            {'role': 'user', 'content': 'Question'},
+            {'role': 'assistant', 'content': [
+                {'type': 'thinking', 'thinking': 'internal', 'signature': 'sig'},
+                {'type': 'text', 'text': 'Answer'},
+                {'type': 'thinking', 'thinking': 'late', 'signature': 'late-sig'},
+            ]},
+            {'role': 'assistant', 'content': [{'type': 'thinking', 'thinking': 'only'}]},
+            {'role': 'user', 'content': 'Next'}]}
+        self.assertTrue(normalize_thinking_history(request))
+        self.assertEqual(request['messages'][1]['content'], [
+            {'type': 'thinking', 'thinking': 'internal', 'signature': 'sig'},
+            {'type': 'text', 'text': 'Answer'}])
+        self.assertEqual(request['messages'][2]['content'], 'Next')
+        self.assertFalse(normalize_thinking_history(request))
 
     def test_wait_heartbeat_then_new_account_real_response(self):
         response = self.post()

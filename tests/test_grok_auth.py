@@ -1,12 +1,17 @@
+import copy
+import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from backend import AccountError
-from grok_auth import GrokAuth
+from backend import AccountError, Controller
+from grok_auth import GrokAuth, desktop_model_id, is_desktop_model
+from integrations import Integrations
+from quota_queue import gateway_aliases, quota_wait
 
 
 class GrokAuthTests(unittest.TestCase):
@@ -58,6 +63,64 @@ class GrokAuthTests(unittest.TestCase):
         controller.request.return_value = {'models': [
             {'id': 'grok-beta'}, {'id': 'grok-4'}, {'name': 'not-an-id'}, {'id': 5}]}
         self.assertEqual(GrokAuth(controller).models({'name': 'xai.json'}), ['grok-4', 'grok-beta'])
+
+    def test_client_routes_are_stable_distinct_and_accepted_as_anthropic_names(self):
+        models = ['grok-4.7', 'grok-4.7-build-fast', 'grok-imagine-image']
+        routes = [desktop_model_id(model) for model in models]
+        self.assertEqual(len(set(routes)), len(models))
+        for model, route in zip(models, routes):
+            self.assertEqual(route, desktop_model_id(model))
+            self.assertTrue(is_desktop_model(route))
+            self.assertTrue(route.startswith('claude-sonnet-4-5-'))
+            self.assertFalse(re.search(r'grok|gpt|gemini|deepseek|codex', route, re.I))
+        self.assertFalse(is_desktop_model('grok-4.7'))
+        self.assertFalse(is_desktop_model(None))
+
+    def test_desktop_migration_removes_xai_routes_and_preserves_custom_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = Controller(proxy_dir=root / 'proxy', data_dir=root / 'data')
+            controller.key = 'test-key'
+            controller.grok_model_choices = lambda: ['grok-4.7', 'grok-4.7-build-fast']
+            controller.chatgpt_model_choices = lambda: []
+            controller.claude_subscription_model_choices = lambda: []
+            controller.oauth_model_choices = lambda *args: []
+            controller.family_model_choices = lambda: {'gemini': ['gemini-3.8-flash-high'], 'claude': []}
+            custom_alias = {'alias': 'custom-xai', 'name': 'grok-4.7'}
+            channels = {'antigravity': [], 'claude': [], 'xai': [custom_alias,
+                {'alias': desktop_model_id('grok-4.7'), 'name': 'grok-4.7'}]}
+            def request(path, method='GET', data=None):
+                self.assertEqual(path, '/oauth-model-alias')
+                if method == 'PATCH':
+                    channels[data['provider']] = copy.deepcopy(data['aliases'])
+                return {'oauth-model-alias': copy.deepcopy(channels)}
+            controller.request = request
+            client = Integrations(controller, root / 'home', root / 'local')
+            path = client.paths()['claude_desktop'][2]
+            client.write_json(path.parent / '_meta.json', {'appliedId': path.stem})
+            custom = {'name': 'claude-custom', 'labelOverride': 'My custom model'}
+            original = {'deploymentDisplayName': 'Gemini Accounts',
+                        'inferenceGatewayBaseUrl': 'http://127.0.0.1:8317',
+                        'inferenceGatewayApiKey': 'keep-key', 'coworkEgressAllowedHosts': ['example.com'],
+                        'customSetting': {'keep': True},
+                        'inferenceModels': [custom, {'name': 'grok-4.7', 'labelOverride': 'Grok · grok-4.7'}]}
+            client.write_json(path, original)
+            self.assertTrue(client.refresh_desktop_model_labels())
+            preset = client.read_json(path)
+            grok = [entry for entry in preset['inferenceModels'] if entry.get('labelOverride', '').startswith('Grok · ')]
+            self.assertEqual(grok, [])
+            self.assertEqual(preset['inferenceModels'][0], custom)
+            for field in ('inferenceGatewayApiKey', 'coworkEgressAllowedHosts', 'customSetting'):
+                self.assertEqual(preset[field], original[field])
+            self.assertEqual(channels['xai'], [custom_alias])
+            aliases = gateway_aliases(channels)
+            self.assertNotIn(desktop_model_id('grok-4.7'), aliases)
+            self.assertFalse(any(is_desktop_model(e['alias']) for e in channels['antigravity']))
+            self.assertFalse(client.refresh_desktop_model_labels())
+            controller.grok_model_choices = lambda: []
+            self.assertFalse(client.refresh_desktop_model_labels())
+            self.assertEqual(channels['xai'], [custom_alias])
+            self.assertFalse(any(is_desktop_model(e['name']) for e in client.read_json(path)['inferenceModels']))
 
 
 if __name__ == '__main__':

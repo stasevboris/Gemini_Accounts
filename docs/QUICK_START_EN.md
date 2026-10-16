@@ -123,9 +123,8 @@ Drag the thin marker on each quota track, or double-click to enter a percentage.
 
 Click the arrow beside account lists or pooled quota summaries to collapse them. Compact indicators remain: gray means missing data and red means zero remaining. The header gear is available in compact mode and opens language, theme, privacy and service visibility options. Hidden services keep their sign-ins, routing and quota monitoring.
 
-## Grok, token estimates and notifications
+## Token estimates and notifications
 
-Open the **Grok** tab, click **Add Grok account**, open the xAI sign-in page and approve the displayed device code. The app waits for sign-in; cancelling ends only that authorization session. Models come from the connected account. No percentage bars are displayed when the provider does not report quota windows.
 
 The calculator in **Routing statistics** estimates tokens for a chosen quota share after three clean measurements. The forecast below estimates time to the reserve and compares it with the reset time. Both depend on workload and are approximate, rather than guaranteed budgets. Historical requests loaded at startup are excluded from new usage intervals.
 
@@ -136,3 +135,20 @@ For Google sign-in from another browser profile, copy the authorization link fro
 ## Compact Claude model menu
 
 The Google section lists Opus/Sonnet once and Flash 3.8 High, Medium and Low. Other Flash/Pro/Lite generations and Google Haiku are hidden from this picker. GPT and connected API/provider entries remain separate. Claude Code 2.1.242 or newer supports the explicit lineup. Refresh the connected client configuration and restart the client after finishing active work. Opus/Sonnet retain the client effort controls; Flash variants are separate model IDs. Existing conversations keep their original routes.
+
+
+## Agent teams
+
+On startup, the manager loads fresh Google quotas and sends a short background “Hi” to full weekly quota groups. Each request is pinned to its account without changing the current chat. Pauses, access restrictions and quota reserves remain respected, and persistent cooldowns prevent repeated greetings after a restart. Probes use an available Flash Low or GPT-OSS model for the relevant group. Weekly buckets already in use do not need an extra startup probe. Account tooltips distinguish an HTTP response from observed weekly consumption. Google controls quota timers; the manager does not report activation until refreshed quota data supports it.
+
+Use the Team tab to enable and configure collaborative agents: accounts, models, roles, concurrency, reviews and limits. Saving settings does not start a task. Google, ChatGPT and Claude accounts are supported. See docs/AGENT_TEAMS_EN.md in the project repository.
+
+To invoke the roster in an existing chat, save its settings and click **Connect team to Claude**. Restart Claude after its current work finishes. Select the **Agent team** model or ask the current model to call MCP tool `team_start` with the task and relevant context. Progress, stopping and export are available in Team. Other chats are not read automatically. Text, code, DOCX and text-based PDF files are paginated; coordinator project commands require a separate permission.
+
+## Flua and other API keys
+
+Open **API keys → Add API key**. Choose **Flua · Anthropic** to prefill `https://api.flua.ink` and `claude-opus-5-5`, enter your key and test the connection. Available models depend on that key's permissions; model discovery fetches its available IDs. For another Anthropic-compatible endpoint, select the generic option and provide its API host, key and models. Re-enter the appropriate key when changing servers. Testing or saving a key does not start an agent team.
+
+## API key rotation
+
+Enable rotation on compatible profiles with the same API URL, protocol and model ID. A failed request can switch keys before response content is delivered. Other endpoints are never selected automatically. Unavailable keys are skipped until the retry time shown in their cards. HTTP 429 without an explicit quota-exhaustion error is displayed as temporary request throttling.
