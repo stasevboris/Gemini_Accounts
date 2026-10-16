@@ -11,6 +11,7 @@ def model_name(model, aliases=None):
         'gemini-3.5-flash-low': '3.5 Flash Medium',
         'gemini-3.5-flash-extra-low': '3.5 Flash Low',
         'gemini-4-argon': '4 Argon',
+        'gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)',
         'claude-haiku-4-5': 'Haiku 4.5',
         'claude-haiku-5.5:free': 'Haiku 5.5 (TokenHarbor)',
         'claude-sonnet-4-6': 'Sonnet 4.6',
@@ -24,6 +25,12 @@ def model_name(model, aliases=None):
         return ' '.join(word.title() for word in model[7:].split('-'))
     # Do not truncate or strip model variants from other providers.
     return model
+
+
+def reasoning_levels(model):
+    if model == 'gemini-4-argon':
+        return ['low', 'medium', 'high']
+    return [reasoning_level(model)]
 
 
 def reasoning_level(model):

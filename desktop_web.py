@@ -7,8 +7,7 @@ SEARCH_TYPES = {'web_search_20250305', 'web_search_20260209'}
 SEARCH_SYSTEM = 'You are an assistant for performing a web search tool use'
 SEARCH_QUERY = 'Perform a web search for the query: '
 SEARCH_HELPERS = ('gpt-6-luna', 'gpt-5.6-luna', 'gpt-5.5',
-                  'gemini-3.8-flash-low', 'gemini-3.1-flash-lite',
-                  'gemini-3.5-flash-lite', 'gemini-3-flash')
+                  'gemini-3.8-flash-low', 'gemini-4-argon')
 
 
 def text_content(content):
