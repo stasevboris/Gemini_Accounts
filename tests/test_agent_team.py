@@ -242,7 +242,7 @@ class TeamTests(unittest.TestCase):
         args['expected_sha256'] = read['sha256']
         tools.execute('write_file', args, person('lead'), can_write=True)
         self.assertEqual(path.read_text(), 'after')
-        self.assertEqual(backups[0]['backup_file'], path)
+        self.assertEqual(backups[0]['backup_file'].resolve(), path.resolve())
         for value in ('../outside', '.git/config', '.env', '.codex/auth.json'):
             with self.assertRaises(AccountError):
                 tools.path(value)
